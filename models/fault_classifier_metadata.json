@@ -1,0 +1,156 @@
+{
+  "model_name": "AeroTwin-UAV AI Fault Prediction Model",
+  "model_type": "RandomForestClassifier",
+  "version": "0.1.0",
+  "framework": "scikit-learn",
+  "trained_at_utc": "2026-09-15T20:57:42.102372+00:00",
+  "random_seed": 42,
+  "libraries": {
+    "scikit_learn": "1.8.0",
+    "joblib": "1.5.3",
+    "numpy": "2.4.4",
+    "pandas": "3.0.2"
+  },
+  "features": [
+    "rpm",
+    "throttle",
+    "altitude",
+    "ambient_temperature",
+    "humidity",
+    "wind_speed",
+    "cht",
+    "egt",
+    "oil_pressure",
+    "oil_temperature",
+    "vibration",
+    "fuel_flow",
+    "engine_load"
+  ],
+  "forbidden_features_excluded": [
+    "engine_health",
+    "fault_type",
+    "fault_severity",
+    "anomaly_score",
+    "rul_hours",
+    "mission_risk"
+  ],
+  "target": "fault_type",
+  "classes": [
+    "COOLING_PROBLEM",
+    "INJECTOR_ABNORMALITY",
+    "LUBRICATION_PROBLEM",
+    "MISFIRE",
+    "NORMAL",
+    "SENSOR_ANOMALY"
+  ],
+  "hyperparameters": {
+    "n_estimators": 200,
+    "max_depth": 22,
+    "min_samples_split": 4,
+    "min_samples_leaf": 2,
+    "class_weight": "balanced",
+    "random_state": 42
+  },
+  "datasets": {
+    "train_path": "data/synthetic/train.csv",
+    "val_path": "data/synthetic/validation.csv",
+    "test_path": "data/synthetic/test.csv",
+    "train_rows": 52500,
+    "val_rows": 10500,
+    "test_rows": 12000,
+    "train_engines": 35,
+    "val_engines": 7,
+    "test_engines": 8
+  },
+  "data_leakage_audit": {
+    "status": "PASS",
+    "train_val_overlap": 0,
+    "train_test_overlap": 0,
+    "val_test_overlap": 0
+  },
+  "validation_metrics": {
+    "accuracy": 0.8813,
+    "precision_macro": 0.7424,
+    "recall_macro": 0.8062,
+    "f1_macro": 0.7571,
+    "precision_weighted": 0.8419,
+    "recall_weighted": 0.8813,
+    "f1_weighted": 0.8517
+  },
+  "test_metrics": {
+    "accuracy": 0.8971,
+    "precision_macro": 0.9305,
+    "recall_macro": 0.8588,
+    "f1_macro": 0.8893,
+    "precision_weighted": 0.9048,
+    "recall_weighted": 0.8971,
+    "f1_weighted": 0.8953,
+    "per_class": {
+      "COOLING_PROBLEM": {
+        "precision": 0.9922103213242454,
+        "recall": 0.8152,
+        "f1-score": 0.8950373298199386,
+        "support": 1250.0
+      },
+      "INJECTOR_ABNORMALITY": {
+        "precision": 0.9958263772954925,
+        "recall": 0.7953333333333333,
+        "f1-score": 0.8843587842846553,
+        "support": 1500.0
+      },
+      "LUBRICATION_PROBLEM": {
+        "precision": 0.9434628975265018,
+        "recall": 0.89,
+        "f1-score": 0.9159519725557461,
+        "support": 1500.0
+      },
+      "MISFIRE": {
+        "precision": 1.0,
+        "recall": 0.9606666666666667,
+        "f1-score": 0.9799387963277797,
+        "support": 1500.0
+      },
+      "NORMAL": {
+        "precision": 0.8404330848420305,
+        "recall": 0.9968421052631579,
+        "f1-score": 0.911979969183359,
+        "support": 4750.0
+      },
+      "SENSOR_ANOMALY": {
+        "precision": 0.8108949416342413,
+        "recall": 0.6946666666666667,
+        "f1-score": 0.748294434470377,
+        "support": 1500.0
+      },
+      "accuracy": 0.8970833333333333,
+      "macro avg": {
+        "precision": 0.9304712704370851,
+        "recall": 0.8587847953216374,
+        "f1-score": 0.8892602144403092,
+        "support": 12000.0
+      },
+      "weighted avg": {
+        "precision": 0.9047996982782754,
+        "recall": 0.8970833333333333,
+        "f1-score": 0.8952931247794762,
+        "support": 12000.0
+      }
+    }
+  },
+  "feature_importances": {
+    "vibration": 0.22408538423541452,
+    "egt": 0.14346327153156413,
+    "oil_pressure": 0.14092330798672148,
+    "cht": 0.12366721512970924,
+    "oil_temperature": 0.11767980582114987,
+    "altitude": 0.05549319502962515,
+    "fuel_flow": 0.04364503023002838,
+    "humidity": 0.041847790106996546,
+    "wind_speed": 0.030981178528885992,
+    "ambient_temperature": 0.02357435844971124,
+    "rpm": 0.020314222735142745,
+    "engine_load": 0.018784719207028296,
+    "throttle": 0.015540521008022421
+  },
+  "disclaimer": "This model is trained and evaluated on physics-inspired synthetic aero piston engine telemetry created for the AeroTwin-UAV software research prototype. It is not certified for operational flight hardware."
+}

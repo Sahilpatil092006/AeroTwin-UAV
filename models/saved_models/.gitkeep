@@ -1,0 +1,2 @@
+# Serialized production AI/ML models (joblib / pickle / onnx)
+# e.g., anomaly_detector.joblib, rul_regressor.joblib, fault_classifier.joblib

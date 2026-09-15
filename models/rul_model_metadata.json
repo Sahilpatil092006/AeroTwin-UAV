@@ -1,0 +1,96 @@
+{
+  "model_name": "AeroTwin-UAV AI Remaining Useful Life (RUL) Regressor",
+  "model_type": "RandomForestRegressor",
+  "version": "0.1.0",
+  "framework": "scikit-learn",
+  "trained_at_utc": "2026-09-15T21:15:08.519336+00:00",
+  "random_seed": 42,
+  "libraries": {
+    "scikit_learn": "1.8.0",
+    "joblib": "1.5.3",
+    "numpy": "2.4.4",
+    "pandas": "3.0.2"
+  },
+  "target": "rul_hours",
+  "target_units": "operating hours",
+  "features": [
+    "rpm",
+    "throttle",
+    "altitude",
+    "ambient_temperature",
+    "humidity",
+    "wind_speed",
+    "cht",
+    "egt",
+    "oil_pressure",
+    "oil_temperature",
+    "vibration",
+    "fuel_flow",
+    "engine_load"
+  ],
+  "forbidden_features_excluded": [
+    "engine_health",
+    "fault_type",
+    "fault_severity",
+    "anomaly_score",
+    "rul_hours",
+    "mission_risk"
+  ],
+  "hyperparameters": {
+    "n_estimators": 200,
+    "max_depth": 22,
+    "min_samples_split": 4,
+    "min_samples_leaf": 2,
+    "random_state": 42,
+    "n_jobs": -1
+  },
+  "training_data": {
+    "train_path": "data/synthetic/train.csv",
+    "val_path": "data/synthetic/validation.csv",
+    "test_path": "data/synthetic/test.csv",
+    "train_rows": 52500,
+    "val_rows": 10500,
+    "test_rows": 12000,
+    "train_engines": 35,
+    "validation_engines": 7,
+    "test_engines": 8
+  },
+  "data_leakage_audit": {
+    "status": "PASS",
+    "train_val_overlap": 0,
+    "train_test_overlap": 0,
+    "val_test_overlap": 0
+  },
+  "validation_metrics": {
+    "mae": 66.69,
+    "rmse": 89.78,
+    "r2": 0.9252,
+    "mape_pct": 28.91
+  },
+  "test_metrics": {
+    "mae": 66.85,
+    "rmse": 88.41,
+    "r2": 0.8996,
+    "mape_pct": 24.27
+  },
+  "feature_importances": {
+    "vibration": 0.4531577255895701,
+    "cht": 0.2160484208909902,
+    "oil_pressure": 0.11764296823929193,
+    "egt": 0.08803560563925168,
+    "fuel_flow": 0.06242193014747312,
+    "humidity": 0.017119478475372835,
+    "wind_speed": 0.012351246135712396,
+    "oil_temperature": 0.01223455405192688,
+    "ambient_temperature": 0.009263081270439134,
+    "altitude": 0.006657330843537813,
+    "rpm": 0.001997296976787926,
+    "engine_load": 0.0018898669780110155,
+    "throttle": 0.0011804947616350272
+  },
+  "sanity_checks": {
+    "negative_predictions_clipped_to_zero": true,
+    "test_negative_predictions_count": 0
+  },
+  "disclaimer": "The RUL model is trained and evaluated on physics-inspired synthetic aero piston engine telemetry generated for the AeroTwin-UAV software prototype. The RUL estimate is decision-support information for the prototype and is not certified for operational aviation use."
+}
