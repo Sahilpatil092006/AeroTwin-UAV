@@ -1,21 +1,22 @@
-import { useState } from 'react';
+import { useTelemetryContext } from '../context/TelemetryContext';
 
 /**
  * useTelemetry Hook
- * Foundation hook for subscribing to incoming aero engine telemetry.
- * Ready for WebSocket / REST polling integration.
+ * Accesses incoming aero engine telemetry and digital twin state from the global provider.
  */
 export function useTelemetry() {
-  const [telemetry, setTelemetry] = useState(null);
-  const [isConnected, setIsConnected] = useState(false);
-  const [lastUpdated, setLastUpdated] = useState(null);
-
+  const ctx = useTelemetryContext();
   return {
-    telemetry,
-    isConnected,
-    lastUpdated,
-    setTelemetry,
-    setIsConnected,
+    telemetry: ctx.telemetry,
+    digitalTwin: ctx.digitalTwin,
+    ai: ctx.ai,
+    mission: ctx.mission,
+    packet: ctx.packet,
+    isConnected: ctx.isConnected,
+    status: ctx.status,
+    lastUpdated: ctx.timestamp,
+    history: ctx.history,
+    reconnect: ctx.reconnect,
   };
 }
 

@@ -4,7 +4,7 @@ import axios from 'axios';
  * Base Axios Client for AeroTwin-UAV Backend (FastAPI)
  * Configured with VITE_API_BASE_URL and development fallback to http://localhost:8000
  */
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -15,22 +15,95 @@ const api = axios.create({
   timeout: 10000,
 });
 
-// Request interceptor for future authentication or request logging
+// Request interceptor
 api.interceptors.request.use(
   (config) => config,
   (error) => Promise.reject(error)
 );
 
-// Response interceptor for error handling
+// Response interceptor
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    // Log network/backend connection issues gracefully in development
     if (error.code === 'ERR_NETWORK') {
       console.warn('[AeroTwin API] Backend server unreachable at:', API_BASE_URL);
     }
     return Promise.reject(error);
   }
 );
+
+/**
+ * Health API Service
+ */
+export const healthApi = {
+  check: async () => {
+    const res = await api.get('/api/health');
+    return res.data;
+  },
+};
+
+/**
+ * Simulation API Service
+ */
+export const simulationApi = {
+  start: async (params) => {
+    const res = await api.post('/api/simulation/start', params);
+    return res.data;
+  },
+  getCurrent: async () => {
+    const res = await api.get('/api/simulation/current');
+    return res.data;
+  },
+};
+
+/**
+ * Digital Twin API Service
+ */
+export const digitalTwinApi = {
+  getStatus: async () => {
+    const res = await api.get('/api/digital-twin/status');
+    return res.data;
+  },
+  getHealth: async () => {
+    const res = await api.get('/api/digital-twin/health');
+    return res.data;
+  },
+  getDeviation: async () => {
+    const res = await api.get('/api/digital-twin/deviation');
+    return res.data;
+  },
+};
+
+/**
+ * AI Inference API Service
+ */
+export const aiApi = {
+  predict: async (telemetry) => {
+    const res = await api.post('/api/ai/predict', telemetry);
+    return res.data;
+  },
+  anomaly: async (telemetry) => {
+    const res = await api.post('/api/ai/anomaly', telemetry);
+    return res.data;
+  },
+  rul: async (telemetry) => {
+    const res = await api.post('/api/ai/rul', telemetry);
+    return res.data;
+  },
+  getExplanation: async () => {
+    const res = await api.get('/api/ai/explanation');
+    return res.data;
+  },
+};
+
+/**
+ * Mission Decision API Service
+ */
+export const missionApi = {
+  getRisk: async (params = {}) => {
+    const res = await api.get('/api/mission/risk', { params });
+    return res.data;
+  },
+};
 
 export default api;

@@ -196,9 +196,111 @@ A predictive prognostic regression model estimates the remaining operating hours
 
 ---
 
-## 8. Development Setup (Configuration Phase)
+## 8. Engine Simulation
 
-### Backend Prerequisites
+A standalone, software-only physics-inspired aero piston engine simulator (`backend/app/simulation/`) models the operational behavior of a Rotax 914/915 iS class turbocharged 4-stroke engine for MALE UAVs:
+
+- **Purpose**: Acts as the dynamic telemetry source and virtual truth layer for the future AeroTwin-UAV Digital Twin, feeding real-time sensor streams into state estimators, AI models, and mission dashboards.
+- **Configurable Inputs**: Target RPM, throttle ($0 - 100\%$), density altitude ($0 - 8000\text{ m}$), ambient temperature ($-10 - 50^\circ\text{C}$), humidity, wind speed, mission duration, and active flight phase.
+- **Flight Phase Profiles**: Supports 6 realistic mission segments (`GROUND`, `TAKEOFF`, `CLIMB`, `CRUISE`, `DESCENT`, `LANDING`) with dynamic aerodynamic load and thermal shifts.
+- **Coupled Thermodynamics & Mechanics**: Models rotational response dynamics, first-order thermal inertia (CHT and oil temperature lag), EGT combustion changes, and oil pump pressure dynamics.
+- **Degradation & Fault Injections**: Supports continuous mechanical wear ($0.0 - 1.0$) and 5 active fault modes (`INJECTOR_ABNORMALITY`, `COOLING_PROBLEM`, `LUBRICATION_PROBLEM`, `MISFIRE`, `SENSOR_ANOMALY`).
+- **Reproducibility & Safety Bounds**: Deterministic pseudo-random generation via configurable seed and strict physical plausibility bounds ($\ge 0$, no NaN/Inf).
+
+---
+
+## 9. Digital Twin
+
+The Digital Twin core (`backend/app/digital_twin/`) serves as the central analytical engine tracking the real-time operational state of the virtual aero piston engine:
+
+```text
+Simulator (Virtual Piston Engine Telemetry Stream)
+     │
+     ▼
+Expected Behavior (Thermodynamic & Kinematic Physics Baseline)
+     │
+     ▼
+Actual Telemetry (Observed Sensor Observations)
+     │
+     ▼
+Deviation Analysis (Absolute, Relative %, & Tolerance-Normalized Residuals)
+     │
+     ▼
+AI Inference (Tri-Model Fusion: Fault Classifier + Anomaly Detector + RUL Regressor)
+     │
+     ▼
+Health + Fitness + RUL (Composite Health Score + Operating Fitness + Prognostics)
+     │
+     ▼
+Digital Twin State (Synchronized State Representation with Overall Status)
+```
+
+- **Expected Behavior**: Physics baseline calculating expected values for RPM, CHT, EGT, oil pressure, oil temperature, vibration, fuel flow, and engine load.
+- **Deviation Analysis**: Evaluates parameter discrepancies against normal operating tolerances and detects threshold transitions (`NORMAL`, `WARNING`, `CRITICAL`).
+- **Composite Scoring**:
+  - **Engine Health ($0 - 100$)**: Represents long-term physical structural/thermal condition, weighted heavily on CHT, oil pressure, vibration, and EGT.
+  - **Engine Fitness ($0 - 100$)**: Quantifies instantaneous operational tracking fidelity relative to expected baseline behavior.
+- **AI Model Fusion**: Seamlessly incorporates outputs from `models/fault_classifier.joblib`, `models/anomaly_detector.joblib`, and `models/rul_model.joblib` without retraining.
+- **Overall Status**: Deterministic tri-state categorization (`HEALTHY`, `WARNING`, `CRITICAL`).
+
+---
+
+## 10. Mission Risk & Reliability Decision Engine
+
+The Mission Risk & Reliability Decision Engine (`backend/app/decision/`) converts real-time Digital Twin state estimations and planned flight parameters into operational decision-support recommendations:
+
+```text
+Digital Twin (State Estimations & Deviations)
+     │
+     ▼
+Engine Health + Fitness (Structural Integrity & Operational Tracking)
+     │
+     ▼
+Fault + Anomaly + RUL (Probabilistic Faults, Outlier Scores, & Remaining Life)
+     │
+     ▼
+Mission Conditions (Duration, Density Altitude, Ambient Temp, Throttle)
+     │
+     ▼
+Mission Reliability (Composite Probability of Mission Success [0 - 100])
+     │
+     ▼
+Mission Risk (Categorized Risk Level: LOW / MEDIUM / HIGH)
+     │
+     ▼
+Recommendation (Actionable Advisory: SAFE_TO_PROCEED / PROCEED_WITH_CAUTION / MISSION_NOT_RECOMMENDED)
+```
+
+- **Mission Reliability ($0 - 100$)**: Multi-factor synthesis of engine health ($30\%$), fitness ($20\%$), RUL adequacy ($15\%$), anomaly score ($15\%$), fault risk ($10\%$), and environmental stress ($10\%$).
+- **Mission Risk (`LOW`, `MEDIUM`, `HIGH`)**: Evaluates baseline reliability alongside deterministic safety escalations (e.g., forced `HIGH` risk on inadequate RUL, critical health $< 50\%$, or high-probability severe mechanical faults).
+- **RUL Adequacy & Margin**: Quantifies remaining flight buffer ($\text{RUL} - \text{Duration}$) and categorizes adequacy (`ADEQUATE`, `MARGINAL`, `INADEQUATE`).
+- **Environmental Stress Index ($0.0 - 1.0$)**: Factors in altitude air density thinning, temperature extremes (desert heat / high-altitude cold), and sustained power demands.
+- **Reason Codes & Natural-Language Explanations**: Generates transparent, verifiable diagnostic codes (e.g., `HIGH_ENGINE_HEALTH`, `HIGH_CHT`, `LOW_RUL_MARGIN`) paired with context-rich rationale for mission commanders.
+
+---
+
+## 11. Mission Control Dashboard (`/dashboard`)
+
+The AeroTwin-UAV Mission Control Dashboard acts as the primary operational command cockpit, synthesizing the entire digital twin and telemetry pipeline:
+
+```text
+Simulation -> Telemetry -> Digital Twin -> AI Analysis -> Engine Health -> Fitness -> RUL -> Mission Risk -> Dashboard
+```
+
+### Dashboard Operational Modules:
+1. **Top Status Bar**: Real-time status for system connection, telemetry link (`CONNECTED` / `DISCONNECTED`), engine flight phase (`CRUISE`, `TAKEOFF`, `STANDBY`), and ground-station operator ID.
+2. **Engine Health Cards**: High-visibility composite scoring for Engine Health ($0 - 100\%$), Engine Fitness ($0 - 100\%$), Mission Risk (`LOW`, `MEDIUM`, `HIGH`), and Estimated Remaining Useful Life (RUL hours).
+3. **Propulsion Telemetry (8 Channels)**: Real-time sensor channels with nominal operating ranges: RPM, CHT, EGT, Oil Pressure, Oil Temperature, Vibration, Fuel Flow, and Engine Load.
+4. **Live Telemetry Waveform Plot**: High-frequency streaming line chart with multi-channel filtering (`ALL`, `THERMAL: CHT/EGT`, `ROTATIONAL: RPM/VIB`).
+5. **Digital Twin State Panel**: Physics baseline model comparisons, expected vs. actual parameters ($\Delta\text{RPM}$, $\Delta\text{CHT}$, $\Delta\text{EGT}$, $\Delta\text{OIL\_P}$), and overall operational state (`OPTIMAL`, `NOMINAL`, `DEGRADED`, `CRITICAL`).
+6. **AI Diagnostics & Anomaly Panel**: Real-time classifier inference, dominant fault confidence percentage, Isolation Forest anomaly status & score, and RUL estimation.
+7. **Mission Risk & Advisory Panel**: Composite reliability probability ($0 - 100\%$), autonomous flight recommendation (`CONTINUE_MISSION`, `PROCEED_WITH_CAUTION`, `RETURN_TO_BASE`), and active reason codes.
+
+---
+
+## 12. Development Setup (Configuration Phase)
+
+### Backend Setup & Execution
 ```bash
 # Python 3.10+ recommended
 python -m venv venv
@@ -207,18 +309,66 @@ python -m venv venv
 # On Linux/macOS:
 source venv/bin/activate
 
+# Install backend dependencies
 pip install -r backend/requirements.txt
+
+# Start the FastAPI REST backend server
+uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### Frontend Prerequisites
+Once running, access the interactive API documentation and health check:
+- **Health Check**: `http://localhost:8000/api/health`
+- **Swagger UI**: `http://localhost:8000/docs`
+- **ReDoc UI**: `http://localhost:8000/redoc`
+- **OpenAPI Schema**: `http://localhost:8000/openapi.json`
+
+### Run Backend API Tests
+```bash
+# Run all backend REST API tests
+python -m pytest tests/test_api.py -v
+
+# Run the complete test suite (Simulator, Digital Twin, AI, Decision Engine, REST API)
+python -m pytest tests/ -v
+```
+
+### Real-Time WebSocket Telemetry Pipeline
+The backend provides a high-frequency real-time WebSocket telemetry stream combining the virtual engine simulator, Digital Twin, AI inference, and Mission Risk engine:
+- **WebSocket Endpoint**: `ws://localhost:8000/ws/telemetry`
+- **Stream Rate**: ~1 update every 0.5 seconds
+- **Payload Schema**: Complete JSON state packets containing raw telemetry, Digital Twin expectations & deviations, AI diagnostics, and mission risk assessments.
+- **Frontend Integration**: Connected via React `TelemetryContext` and `useWebSocket` hook in STEP 13.
+
+#### Testing the WebSocket Stream
+```bash
+# 1. Ensure backend is running:
+uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
+
+# 2. In another terminal, run the WebSocket test client:
+python scripts/test_websocket.py
+
+# 3. Run automated WebSocket unit tests:
+python -m pytest tests/test_websocket.py -v
+```
+
+### Frontend Setup & Execution
 ```bash
 # Node.js 18+ recommended
 cd frontend
 npm install
+
+# Run frontend contract unit tests
+npm test
+
+# Build production bundle
+npm run build
+
+# Start local development server (connecting to http://localhost:8000)
 npm run dev
 ```
 
+The React dashboard will automatically connect to `ws://localhost:8000/ws/telemetry` upon opening in the browser, showing `CONNECTED` status and streaming live telemetry, Digital Twin state, AI fault/anomaly predictions, and Mission Risk calculations.
+
 ---
 
-## 9. License & Attribution
+## 13. License & Attribution
 Developed for research, simulation, and academic demonstration of digital twin technology in unmanned aerospace propulsion systems.

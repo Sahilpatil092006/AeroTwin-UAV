@@ -1,10 +1,27 @@
 import React from 'react';
 import { Menu, Activity, Shield, User, Gauge } from 'lucide-react';
 import { getStatusConfig, STATUS_TYPES } from '../utils/status';
+import { useTelemetry } from '../hooks/useTelemetry';
+import { WS_STATUS } from '../hooks/useWebSocket';
 
 export default function TopBar({ onMenuClick }) {
-  const sysStatusCfg = getStatusConfig(STATUS_TYPES.IDLE);
-  const simStatusCfg = getStatusConfig(STATUS_TYPES.IDLE);
+  const { isConnected, status, packet } = useTelemetry();
+
+  let sysStatusCfg;
+  let sysLabel;
+  if (isConnected) {
+    sysStatusCfg = getStatusConfig(STATUS_TYPES.HEALTHY);
+    sysLabel = 'ONLINE';
+  } else if (status === WS_STATUS.CONNECTING || status === WS_STATUS.RECONNECTING) {
+    sysStatusCfg = getStatusConfig(STATUS_TYPES.WARNING);
+    sysLabel = status === WS_STATUS.RECONNECTING ? 'RECONNECTING' : 'CONNECTING';
+  } else {
+    sysStatusCfg = getStatusConfig(STATUS_TYPES.IDLE);
+    sysLabel = 'OFFLINE';
+  }
+
+  const flightPhase = packet?.flight_phase || 'STANDBY';
+  const simStatusCfg = isConnected ? getStatusConfig(STATUS_TYPES.INFORMATION) : getStatusConfig(STATUS_TYPES.IDLE);
 
   return (
     <header className="h-16 bg-slate-950/90 border-b border-slate-800/80 px-4 md:px-6 flex items-center justify-between sticky top-0 z-30 backdrop-blur-md">
@@ -42,9 +59,23 @@ export default function TopBar({ onMenuClick }) {
           <div className="text-[11px] font-mono leading-none">
             <span className="text-slate-400 block text-[9px]">SYSTEM</span>
             <div className="flex items-center gap-1.5 mt-0.5">
-              <span className={`w-1.5 h-1.5 rounded-full ${sysStatusCfg.dotColor}`} />
+              <span className={`w-1.5 h-1.5 rounded-full ${sysStatusCfg.dotColor} ${isConnected ? 'animate-pulse' : ''}`} />
               <span className={`font-semibold ${sysStatusCfg.textColor}`}>
-                {sysStatusCfg.label}
+                {sysLabel}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Telemetry Link Status Indicator */}
+        <div className="hidden md:flex items-center gap-2 px-2.5 py-1 rounded bg-slate-900/80 border border-slate-800">
+          <Shield className="w-3.5 h-3.5 text-slate-400" />
+          <div className="text-[11px] font-mono leading-none">
+            <span className="text-slate-400 block text-[9px]">TELEMETRY</span>
+            <div className="flex items-center gap-1.5 mt-0.5">
+              <span className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+              <span className={`font-semibold ${isConnected ? 'text-emerald-400' : 'text-slate-400'}`}>
+                {isConnected ? 'CONNECTED' : 'DISCONNECTED'}
               </span>
             </div>
           </div>
@@ -57,7 +88,7 @@ export default function TopBar({ onMenuClick }) {
             <span className="text-slate-400 block text-[9px]">SIM ENGINE</span>
             <div className="flex items-center gap-1.5 mt-0.5">
               <span className={`w-1.5 h-1.5 rounded-full ${simStatusCfg.dotColor}`} />
-              <span className="font-semibold text-slate-300">IDLE</span>
+              <span className="font-semibold text-slate-300">{flightPhase}</span>
             </div>
           </div>
         </div>
