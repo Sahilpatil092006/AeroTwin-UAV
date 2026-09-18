@@ -18,13 +18,15 @@ export default function ComponentInfoPanel({
   digitalTwin = {},
   isConnected = false,
 }) {
+  const tel = telemetry || {};
+  const dt = digitalTwin || {};
   const selectedPart =
     ENGINE_PARTS.find((p) => p.id === selectedPartId) || ENGINE_PARTS[0];
 
-  const status = getComponentStatus(selectedPart, telemetry, digitalTwin);
+  const status = getComponentStatus(selectedPart, tel, dt);
   const liveVal =
-    isConnected && telemetry[selectedPart.telemetryKey] !== undefined
-      ? Number(telemetry[selectedPart.telemetryKey]).toFixed(1)
+    isConnected && tel[selectedPart.telemetryKey] !== undefined
+      ? Number(tel[selectedPart.telemetryKey]).toFixed(1)
       : '--';
 
   let statusBg = 'bg-emerald-950/80 border-emerald-600/70 text-emerald-300';
@@ -45,11 +47,11 @@ export default function ComponentInfoPanel({
   let percentage = 50;
   if (
     isConnected &&
-    telemetry[selectedPart.telemetryKey] !== undefined &&
+    tel[selectedPart.telemetryKey] !== undefined &&
     selectedPart.nominalMin &&
     selectedPart.nominalMax
   ) {
-    const raw = Number(telemetry[selectedPart.telemetryKey]);
+    const raw = Number(tel[selectedPart.telemetryKey]);
     const min = selectedPart.nominalMin;
     const max = selectedPart.warningMax || selectedPart.nominalMax * 1.15;
     percentage = Math.max(5, Math.min(100, ((raw - min) / (max - min)) * 100));

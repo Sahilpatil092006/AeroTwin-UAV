@@ -28,7 +28,7 @@ import {
 export default function DigitalTwinPage() {
   const { isConnected, packet, telemetry, digitalTwin } = useTelemetry();
   const [activeTab, setActiveTab] = useState('3D VIEW');
-  const [selectedPartId, setSelectedPartId] = useState('cylinder_head');
+  const [selectedPartId, setSelectedPartId] = useState(null);
   const [selectedCylinder, setSelectedCylinder] = useState('CYLINDER 1');
 
   const syncStatusClass = isConnected
@@ -288,6 +288,7 @@ export default function DigitalTwinPage() {
                 onSelectPart={setSelectedPartId}
                 selectedCylinder={selectedCylinder}
                 onSelectCylinder={setSelectedCylinder}
+                onSwitchMode={setActiveTab}
                 telemetry={telemetry}
                 digitalTwin={digitalTwin}
                 isConnected={isConnected}
@@ -306,6 +307,7 @@ export default function DigitalTwinPage() {
                 onSelectPart={setSelectedPartId}
                 selectedCylinder={selectedCylinder}
                 onSelectCylinder={setSelectedCylinder}
+                onSwitchMode={setActiveTab}
                 telemetry={telemetry}
                 digitalTwin={digitalTwin}
                 isConnected={isConnected}
@@ -336,16 +338,6 @@ export default function DigitalTwinPage() {
         </div>
       </div>
 
-      {/* Component Information Panel (always visible when viewing 3D or 2D) */}
-      {(activeTab === '3D VIEW' || activeTab === '2D SCHEMATIC') && (
-        <ComponentInfoPanel
-          selectedPartId={selectedPartId}
-          onSelectPart={setSelectedPartId}
-          telemetry={telemetry}
-          digitalTwin={digitalTwin}
-          isConnected={isConnected}
-        />
-      )}
 
       {/* Parts List Table (visible below 3D & 2D views) */}
       {(activeTab === '3D VIEW' || activeTab === '2D SCHEMATIC') && (

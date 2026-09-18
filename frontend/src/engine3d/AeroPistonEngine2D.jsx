@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { ENGINE_PARTS, getComponentStatus } from './enginePartsData';
-import { Crosshair, Info, Layers, Eye } from 'lucide-react';
+import { Crosshair, Info, Layers, Eye, Box, FileCode2 } from 'lucide-react';
 
 export default function AeroPistonEngine2D({
   selectedPartId,
   onSelectPart,
   selectedCylinder = 'CYLINDER 1',
   onSelectCylinder = () => {},
+  onSwitchMode = () => {},
   telemetry = {},
   digitalTwin = {},
   isConnected = false,
@@ -51,6 +52,25 @@ export default function AeroPistonEngine2D({
           <span className="text-xs font-bold text-slate-200">
             2D TECHNICAL SCHEMATIC // BOXER-4
           </span>
+          {/* 3D / 2D Mode Switcher */}
+          <div className="flex items-center p-0.5 rounded bg-slate-900 border border-slate-700 text-xs">
+            <button
+              type="button"
+              onClick={() => onSwitchMode('3D VIEW')}
+              className="px-2.5 py-1 rounded text-slate-400 hover:text-slate-200 text-xs transition-all flex items-center gap-1"
+              title="Switch to 3D Virtual Engine Representation"
+            >
+              <Box className="w-3.5 h-3.5 text-slate-400" />
+              <span>3D VIEW</span>
+            </button>
+            <button
+              type="button"
+              className="px-2.5 py-1 rounded bg-sky-950 border border-sky-500 text-sky-200 font-bold text-xs flex items-center gap-1 shadow-sm"
+            >
+              <FileCode2 className="w-3.5 h-3.5 text-sky-400" />
+              <span>2D SCHEMATIC</span>
+            </button>
+          </div>
           <div className="hidden sm:flex items-center p-0.5 rounded bg-slate-900 border border-slate-800 text-[10px]">
             {['CYLINDER 1', 'CYLINDER 2', 'CYLINDER 3', 'CYLINDER 4'].map((cyl) => (
               <button
@@ -82,18 +102,31 @@ export default function AeroPistonEngine2D({
             <span>{showFlows ? 'HIDE FLOWS' : 'SHOW FLOWS'}</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => setShowLabels((prev) => !prev)}
-            className={`px-2.5 py-1 rounded text-xs border flex items-center gap-1.5 transition-all ${
-              showLabels
-                ? 'bg-sky-950/80 border-sky-600 text-sky-300'
-                : 'bg-slate-900 border-slate-800 text-slate-400'
-            }`}
-          >
-            <Eye className="w-3.5 h-3.5" />
-            <span>{showLabels ? 'HIDE LABELS' : 'SHOW LABELS'}</span>
-          </button>
+          {/* Names Toggle: [SHOW NAMES] [HIDE NAMES] */}
+          <div className="flex items-center p-0.5 rounded bg-slate-900 border border-slate-700 text-xs">
+            <button
+              type="button"
+              onClick={() => setShowLabels(true)}
+              className={`px-2 py-0.5 rounded text-xs font-bold transition-all flex items-center gap-1 ${
+                showLabels
+                  ? 'bg-sky-950 border border-sky-500 text-sky-200 shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <span>SHOW NAMES</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowLabels(false)}
+              className={`px-2 py-0.5 rounded text-xs font-bold transition-all flex items-center gap-1 ${
+                !showLabels
+                  ? 'bg-slate-800 border border-slate-600 text-slate-200 shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <span>HIDE NAMES</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -838,6 +871,19 @@ export default function AeroPistonEngine2D({
               />
               <text x="215" y="415" fill="#eab308" fontSize="10" fontWeight="bold">
                 LUBRICATION FLOW
+              </text>
+
+              {/* Mechanical Power Transfer Vector: PISTON -> ROD -> CRANKSHAFT -> GEARBOX -> PROPELLER */}
+              <path
+                d="M 260 110 L 260 150 L 170 150 L 120 150"
+                fill="none"
+                stroke="#38bdf8"
+                strokeWidth="2.5"
+                strokeDasharray="5 3"
+                markerEnd="url(#arrowAir)"
+              />
+              <text x="140" y="170" fill="#38bdf8" fontSize="9" fontWeight="bold">
+                MECHANICAL POWER: PISTON → ROD → CRANKSHAFT → GEARBOX → PROPELLER
               </text>
 
               {/* Combustion Indicator Spark Burst in Cylinder 1 */}

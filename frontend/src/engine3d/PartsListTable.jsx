@@ -9,6 +9,8 @@ export default function PartsListTable({
   digitalTwin = {},
   isConnected = false,
 }) {
+  const tel = telemetry || {};
+  const dt = digitalTwin || {};
   const [searchTerm, setSearchTerm] = useState('');
 
   const filteredParts = ENGINE_PARTS.filter(
@@ -24,7 +26,7 @@ export default function PartsListTable({
       <div className="flex flex-wrap items-center justify-between gap-3 pb-3 mb-3 border-b border-slate-800/80">
         <div>
           <h4 className="text-sm font-bold text-white tracking-wide">
-            AERO PISTON ENGINE PARTS LIST (20 SUBSYSTEMS)
+            AERO PISTON ENGINE PARTS LIST (28 SUBSYSTEMS)
           </h4>
           <span className="text-[10px] text-slate-400">
             Click any row to focus 3D camera / highlight in 2D schematic & inspect live parameters.
@@ -60,10 +62,10 @@ export default function PartsListTable({
           <tbody className="divide-y divide-slate-800/50">
             {filteredParts.map((part, index) => {
               const isSelected = part.id === selectedPartId;
-              const status = getComponentStatus(part, telemetry, digitalTwin);
+              const status = getComponentStatus(part, tel, dt);
               const liveVal =
-                isConnected && telemetry[part.telemetryKey] !== undefined
-                  ? `${Number(telemetry[part.telemetryKey]).toFixed(1)} ${part.unit}`
+                isConnected && tel[part.telemetryKey] !== undefined
+                  ? `${Number(tel[part.telemetryKey]).toFixed(1)} ${part.unit}`
                   : `-- ${part.unit}`;
 
               let statusBadge = 'bg-emerald-950/50 text-emerald-400 border-emerald-800/60';
