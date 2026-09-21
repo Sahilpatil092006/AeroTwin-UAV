@@ -58,14 +58,15 @@ async def websocket_telemetry_stream(websocket: WebSocket):
     # 2. Continuous real-time streaming loop
     try:
         while True:
-            # Advance simulation, synchronize Digital Twin & Mission Risk
-            packet = service_manager.step_simulation(dt=1.0)
+            # Advance simulation asynchronously in thread pool to prevent blocking event loop
+            target_uav = service_manager.active_manual_uav_id or service_manager.default_uav_id
+            packet = await asyncio.to_thread(service_manager.step_simulation, 1.0, target_uav)
 
             # Transmit structured telemetry and analysis packet
             await websocket.send_json(packet)
 
-            # Asynchronous throttle (approx 1 update per 0.5 - 1.0 seconds)
-            await asyncio.sleep(0.5)
+            # 1 Hz discrete simulation step throttle
+            await asyncio.sleep(1.0)
 
     except WebSocketDisconnect:
         logger.info("Telemetry WebSocket disconnected.")

@@ -106,7 +106,7 @@ export default function ComponentInfoPanel({
                 <Gauge className="w-3 h-3 text-sky-400" />
                 <span>RELATED TELEMETRY</span>
               </span>
-              <span className="text-slate-500">[{selectedPart.telemetryKey.toUpperCase()}]</span>
+              <span className="text-slate-500">[{selectedPart?.telemetryKey ? selectedPart.telemetryKey.toUpperCase() : 'NOMINAL'}]</span>
             </div>
             <div className="text-slate-300 text-[11px] font-semibold mb-2">
               {selectedPart.telemetryLabel}

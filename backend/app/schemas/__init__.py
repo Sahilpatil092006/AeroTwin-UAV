@@ -10,6 +10,7 @@ from backend.app.schemas.schemas import (
     TelemetryInput,
     TelemetryResponse,
     SimulationStartRequest,
+    SimulationFaultRequest,
     ParameterDeviationDetail,
     DigitalTwinHealthResponse,
     DigitalTwinDeviationResponse,
@@ -18,7 +19,10 @@ from backend.app.schemas.schemas import (
     AnomalyResponse,
     RULResponse,
     AIExplanationResponse,
-    MissionRiskResponse
+    MissionRiskResponse,
+    UAVState,
+    UAVStateResponse,
+    FleetStateResponse
 )
 
 __all__ = [
@@ -27,6 +31,7 @@ __all__ = [
     "TelemetryInput",
     "TelemetryResponse",
     "SimulationStartRequest",
+    "SimulationFaultRequest",
     "ParameterDeviationDetail",
     "DigitalTwinHealthResponse",
     "DigitalTwinDeviationResponse",
@@ -35,5 +40,8 @@ __all__ = [
     "AnomalyResponse",
     "RULResponse",
     "AIExplanationResponse",
-    "MissionRiskResponse"
+    "MissionRiskResponse",
+    "UAVState",
+    "UAVStateResponse",
+    "FleetStateResponse"
 ]

@@ -53,10 +53,12 @@ class AeroPistonEngineSimulator:
         enable_noise: bool = True,
         noise_scale: float = 1.0,
         parameters: Optional[EngineParameters] = None,
-        start_time: Optional[datetime.datetime] = None
+        start_time: Optional[datetime.datetime] = None,
+        uav_id: str = "UAV-001"
     ):
         self.engine_id = engine_id
         self.mission_id = mission_id
+        self.uav_id = uav_id
         self.seed = seed
         self.enable_noise = enable_noise
         self.noise_scale = max(0.0, noise_scale)
@@ -129,6 +131,12 @@ class AeroPistonEngineSimulator:
                 self.inputs.flight_phase = flight_phase.value
             else:
                 self.inputs.flight_phase = str(flight_phase).upper()
+        if rpm_target is not None:
+            self.inputs.rpm_target = float(rpm_target)
+        elif flight_phase is not None:
+            # If flight phase changed without explicit manual rpm_target override,
+            # clear stale rpm_target so target RPM naturally follows the flight phase profile and throttle dynamics
+            self.inputs.rpm_target = None
         if mission_duration is not None:
             self.inputs.mission_duration = float(mission_duration)
 
@@ -344,7 +352,8 @@ class AeroPistonEngineSimulator:
             engine_load=final_load_pct,
             degradation=round(self.degradation, 3),
             fault_type=self.fault_config.fault_type.value,
-            fault_severity=round(self.fault_config.severity, 2)
+            fault_severity=round(self.fault_config.severity, 2),
+            uav_id=self.uav_id
         )
 
         # Validate bounds & finite numbers

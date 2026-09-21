@@ -32,57 +32,105 @@ import {
   X,
 } from 'lucide-react';
 import WebGLErrorBoundary from './WebGLErrorBoundary';
-import { ENGINE_PARTS, getComponentStatus } from './enginePartsData';
+import {
+  ENGINE_PARTS,
+  getComponentStatus,
+  getComponentFaultDetails,
+  getActiveFaultedPartId,
+} from './enginePartsData';
+
+/**
+ * Short names for 3D engine labels:
+ * "Propeller", "Cylinders", "Crankshaft", "Oil", "Turbo"
+ */
+const SHORT_NAMES = {
+  propeller: 'Propeller',
+  propeller_hub: 'Propeller',
+  reduction_gearbox: 'Gearbox',
+  crankcase: 'Crankcase',
+  crankshaft: 'Crankshaft',
+  camshaft: 'Camshaft',
+  cylinder_1: 'Cylinders',
+  cylinder_2: 'Cylinders',
+  cylinder_3: 'Cylinders',
+  cylinder_4: 'Cylinders',
+  cylinder_head: 'Cylinders',
+  piston: 'Cylinders',
+  connecting_rod: 'Crankshaft',
+  intake_valve: 'Valves',
+  exhaust_valve: 'Valves',
+  spark_plug: 'Spark Plugs',
+  fuel_injector: 'Injectors',
+  intake_manifold: 'Intake',
+  exhaust_manifold: 'Exhaust',
+  exhaust_outlet: 'Turbo',
+  turbocharger: 'Turbo',
+  turbo_intake: 'Turbo',
+  turbo_exhaust: 'Turbo',
+  oil_sump: 'Oil',
+  oil_pump: 'Oil',
+  oil_filter: 'Oil',
+  cooling_fins: 'Cylinders',
+  wastegate: 'Turbo',
+};
 
 /**
  * EXACTLY 5 Major Non-Overlapping Labels for SHOW NAMES
- * Propeller, Cylinders, Crankshaft, Turbocharger, Oil System
- * Anchored in 5 completely separate quadrants in 3D space.
+ * Short names: Propeller, Cylinders, Crankshaft, Oil, Turbo
+ * Anchored in 5 separate quadrants around engine perimeter.
  */
 const MAJOR_FIVE_LABELS = [
   {
     id: 'propeller',
     name: 'Propeller',
-    anchor3D: [0, 1.45, 1.85],
-    labelPos3D: [0, 2.2, 2.05],
+    anchor3D: [0, 0.05, 1.3],
+    labelPos3D: [-0.45, 0.25, 1.3],
   },
   {
     id: 'cylinder_1',
     name: 'Cylinders',
     anchor3D: [-1.45, 0.05, 0],
-    labelPos3D: [-2.5, 0.45, 0],
+    labelPos3D: [-1.85, 0.22, 0],
   },
   {
     id: 'crankshaft',
     name: 'Crankshaft',
-    anchor3D: [0, 0.05, 0.2],
-    labelPos3D: [0.95, 1.35, 0.3],
-  },
-  {
-    id: 'turbocharger',
-    name: 'Turbocharger',
-    anchor3D: [0, -0.55, -1.6],
-    labelPos3D: [0, -0.9, -2.45],
+    anchor3D: [0, 0.05, 0.1],
+    labelPos3D: [0.65, 0.25, 0.1],
   },
   {
     id: 'oil_sump',
-    name: 'Oil System',
+    name: 'Oil',
     anchor3D: [0.4, -0.65, 0.4],
-    labelPos3D: [1.25, -1.25, 0.5],
+    labelPos3D: [0.68, -0.65, 0.4],
+  },
+  {
+    id: 'turbocharger',
+    name: 'Turbo',
+    anchor3D: [0, -0.55, -1.6],
+    labelPos3D: [-0.48, -0.35, -1.6],
   },
 ];
 
 /**
- * Clean Non-Overlapping Leader Line and Badge for the 5 Major Labels
+ * Compact 3D Label Badge
+ * - Maximum font-size: 10px
+ * - Maximum label height: 22px
+ * - Short subtle leader lines
+ * - No distanceFactor (maintains true screen pixel size)
  */
-function ComponentLeaderLabel({ part, onSelect, isSelected }) {
-  if (isSelected) return null; // Detail popup takes over when selected
+function ComponentLeaderLabel({ part, onSelect, isSelected, isFault, isWarning }) {
   const anchor = part.anchor3D || [0, 0, 0];
-  const targetPos = part.labelPos3D || [
-    anchor[0] + (anchor[0] >= 0 ? 1 : -1) * 0.6,
-    anchor[1] + 0.4,
-    anchor[2] + (anchor[2] >= 0 ? 1 : -1) * 0.3,
-  ];
+  const targetPos = useMemo(() => {
+    const majorMatch = MAJOR_FIVE_LABELS.find((m) => m.id === part.id);
+    if (majorMatch?.labelPos3D) return majorMatch.labelPos3D;
+
+    const [ax, ay, az] = anchor;
+    const offsetX = ax < -0.15 ? -0.35 : ax > 0.15 ? 0.35 : -0.5;
+    const offsetY = 0.15;
+    const offsetZ = 0.02;
+    return [ax + offsetX, ay + offsetY, az + offsetZ];
+  }, [anchor, part.id]);
 
   const linePoints = useMemo(() => {
     return [new THREE.Vector3(...anchor), new THREE.Vector3(...targetPos)];
@@ -92,41 +140,81 @@ function ComponentLeaderLabel({ part, onSelect, isSelected }) {
     return new THREE.BufferGeometry().setFromPoints(linePoints);
   }, [linePoints]);
 
+  const lineColor = isFault ? 0xef4444 : isWarning ? 0xf59e0b : isSelected ? 0x38bdf8 : 0x64748b;
+  const displayName = SHORT_NAMES[part.id] || part.name || 'Component';
+
   return (
     <group>
-      {/* Anchor Dot on Component */}
+      {/* Subtle Anchor Dot on Component */}
       <mesh position={anchor}>
-        <sphereGeometry args={[0.035, 12, 12]} />
-        <meshBasicMaterial color="#38bdf8" />
+        <sphereGeometry args={[0.015, 8, 8]} />
+        <meshBasicMaterial color={isFault ? '#ef4444' : isWarning ? '#f59e0b' : isSelected ? '#38bdf8' : '#64748b'} />
       </mesh>
 
-      {/* 3D Leader Line from component to label */}
+      {/* Subtle Short Leader Line */}
       <primitive
         object={
           new THREE.Line(
             lineGeometry,
             new THREE.LineBasicMaterial({
-              color: 0x0284c7,
+              color: lineColor,
               transparent: true,
-              opacity: 0.85,
-              linewidth: 1.5,
+              opacity: 0.55,
+              linewidth: 1,
             })
           )
         }
       />
 
-      {/* Small Clean Label Badge */}
-      <Html position={targetPos} center distanceFactor={12} zIndexRange={[20, 0]} style={{ pointerEvents: 'auto' }}>
+      {/* Small Compact Badge: Max font-size: 10px, Max height: 22px, No Drei scale-up */}
+      <Html position={targetPos} center zIndexRange={[20, 0]} style={{ pointerEvents: 'auto' }}>
         <button
           type="button"
           onClick={(e) => {
             e.stopPropagation();
             onSelect(part.id);
           }}
-          className="px-2 py-0.5 rounded text-[10px] font-mono shadow-md transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer bg-slate-950/95 border border-sky-500/70 text-sky-200 hover:text-white hover:border-sky-400 hover:bg-slate-900"
+          style={{
+            fontSize: '10px',
+            lineHeight: '18px',
+            maxHeight: '22px',
+            height: '20px',
+            padding: '0 6px',
+            whiteSpace: 'nowrap',
+          }}
+          className={`rounded font-mono shadow transition-all inline-flex items-center gap-1 cursor-pointer backdrop-blur-md border ${
+            isFault
+              ? 'bg-rose-950/90 border-rose-500 text-rose-200 shadow-rose-950/40'
+              : isWarning
+              ? 'bg-amber-950/90 border-amber-500 text-amber-200 shadow-amber-950/40'
+              : isSelected
+              ? 'bg-sky-950/95 border-sky-400 text-sky-100 ring-1 ring-sky-400/40 font-bold'
+              : 'bg-slate-950/90 border-slate-700 text-slate-300 hover:text-white hover:border-sky-400'
+          }`}
         >
-          <span className="w-1.5 h-1.5 rounded-full bg-sky-400" />
-          <span className="font-semibold tracking-wide">{part.name}</span>
+          <span
+            style={{ width: '5px', height: '5px' }}
+            className={`rounded-full flex-shrink-0 ${
+              isFault ? 'bg-rose-400 animate-pulse' : isWarning ? 'bg-amber-400 animate-pulse' : isSelected ? 'bg-sky-400' : 'bg-slate-400'
+            }`}
+          />
+          <span className="font-semibold">{displayName}</span>
+          {isFault && (
+            <span
+              style={{ fontSize: '8px', lineHeight: '12px', padding: '0 3px' }}
+              className="rounded bg-rose-600/40 text-rose-300 font-bold tracking-tight"
+            >
+              FAULT
+            </span>
+          )}
+          {isWarning && (
+            <span
+              style={{ fontSize: '8px', lineHeight: '12px', padding: '0 3px' }}
+              className="rounded bg-amber-600/40 text-amber-300 font-bold tracking-tight"
+            >
+              WARN
+            </span>
+          )}
         </button>
       </Html>
     </group>
@@ -134,178 +222,115 @@ function ComponentLeaderLabel({ part, onSelect, isSelected }) {
 }
 
 /**
- * Small Floating Details Card near Selected Part (Never Covering Engine)
- * Contains: Part Name, Function, Description, Live Status
- * Includes glowing anchor, pulsating highlight, and 3D leader line
+ * Compact Diagnostic Card docked beside the 3D viewport without covering the engine.
+ * Selected component, fault label, component name, telemetry, baseline, deviation,
+ * and description all strictly refer to the SAME component.
  */
-function FloatingPartDetailsCard({
-  selectedPartId,
-  onClose,
-  telemetry = {},
-  digitalTwin = {},
-}) {
-  if (!selectedPartId) return null;
-  const part = ENGINE_PARTS.find((p) => p.id === selectedPartId);
-  if (!part) return null;
+function CompactDiagnosticCard({ part, faultDetails, onClose }) {
+  if (!part || !faultDetails) return null;
 
-  const anchor = part.anchor3D || [0, 0, 0];
+  const isFault = faultDetails.status === 'FAULT';
+  const isWarning = faultDetails.status === 'WARNING';
 
-  // Calculate 3D card position: pushed radially outside engine envelope so it NEVER covers engine
-  const cardPos = useMemo(() => {
-    const [ax, ay, az] = anchor;
-    if (Math.abs(ax) >= 0.3) {
-      // Left or Right bank: push well outward past cylinder heads (X = +- 2.35)
-      const signX = ax >= 0 ? 1 : -1;
-      return [signX * 2.35, ay + 0.35, az];
-    } else if (az > 0.8) {
-      // Front (Propeller, Hub, Gearbox)
-      return [ax >= 0 ? 1.35 : -1.35, Math.max(ay, 1.45), az + 0.4];
-    } else if (az < -0.5) {
-      // Rear (Turbocharger, Exhaust)
-      return [ax >= 0 ? 1.85 : -1.85, ay + 0.45, az - 0.45];
-    } else if (ay < -0.2) {
-      // Bottom (Oil Sump, Oil Filter)
-      return [ax >= 0 ? 1.85 : -1.85, -1.05, az];
-    } else {
-      // Top central (Crankcase, Intake Manifold)
-      return [ax >= 0 ? 1.85 : -1.85, 1.45, az];
-    }
-  }, [anchor]);
-
-  const linePoints = useMemo(() => {
-    return [new THREE.Vector3(...anchor), new THREE.Vector3(...cardPos)];
-  }, [anchor, cardPos]);
-
-  const lineGeometry = useMemo(() => {
-    return new THREE.BufferGeometry().setFromPoints(linePoints);
-  }, [linePoints]);
-
-  const status = getComponentStatus(part, telemetry, digitalTwin);
+  const theme = isFault
+    ? {
+        border: 'border-rose-500/80',
+        badgeBg: 'bg-rose-950/90 border-rose-600 text-rose-300',
+        dot: 'bg-rose-400 animate-ping',
+        textAccent: 'text-rose-400',
+        shadow: 'rgba(244, 63, 94, 0.3)',
+      }
+    : isWarning
+    ? {
+        border: 'border-amber-500/80',
+        badgeBg: 'bg-amber-950/90 border-amber-600 text-amber-300',
+        dot: 'bg-amber-400 animate-pulse',
+        textAccent: 'text-amber-400',
+        shadow: 'rgba(245, 158, 11, 0.3)',
+      }
+    : {
+        border: 'border-sky-500/70',
+        badgeBg: 'bg-emerald-950/90 border-emerald-600 text-emerald-300',
+        dot: 'bg-emerald-400',
+        textAccent: 'text-sky-300',
+        shadow: 'rgba(14, 165, 233, 0.25)',
+      };
 
   return (
-    <group>
-      {/* Glowing Anchor Dot on the Part */}
-      <mesh position={anchor}>
-        <sphereGeometry args={[0.045, 16, 16]} />
-        <meshBasicMaterial color="#38bdf8" />
-      </mesh>
-
-      {/* Pulsing Anchor Ring on Component */}
-      <mesh position={anchor} rotation={[Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[0.065, 0.085, 24]} />
-        <meshBasicMaterial color="#38bdf8" transparent opacity={0.75} side={THREE.DoubleSide} />
-      </mesh>
-
-      {/* Glowing 3D Leader Line from Component Anchor to Floating Card */}
-      <primitive
-        object={
-          new THREE.Line(
-            lineGeometry,
-            new THREE.LineBasicMaterial({
-              color: 0x38bdf8,
-              transparent: true,
-              opacity: 0.95,
-              linewidth: 2,
-            })
-          )
-        }
-      />
-
-      {/* Small Floating Details Card (Positioned Beside Engine, Never Over Engine) */}
-      <Html
-        position={cardPos}
-        center
-        distanceFactor={11}
-        zIndexRange={[80, 0]}
-        style={{ pointerEvents: 'auto' }}
-      >
-        <div
-          onClick={(e) => e.stopPropagation()}
-          onPointerDown={(e) => e.stopPropagation()}
-          className="w-64 max-w-[270px] bg-slate-950/95 backdrop-blur-md border border-sky-500/80 rounded-lg p-3 text-xs shadow-2xl text-slate-200 select-text font-mono"
-          style={{
-            boxShadow: '0 10px 30px -5px rgba(14, 165, 233, 0.35), 0 0 1px 1px rgba(56, 189, 248, 0.5)',
-          }}
-        >
-          {/* Card Header */}
-          <div className="flex items-center justify-between gap-1 border-b border-slate-800 pb-1.5 mb-2">
-            <div className="flex items-center gap-1.5 min-w-0">
-              <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping flex-shrink-0" />
-              <h4 className="font-bold text-sky-200 text-xs truncate tracking-wide">
-                {part.name}
-              </h4>
-            </div>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onClose();
-              }}
-              className="text-slate-400 hover:text-white p-0.5 rounded hover:bg-slate-800 transition-colors"
-              title="Close card"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </div>
-
-          {/* Function & Description */}
-          <div className="mb-2">
-            <div className="flex items-center justify-between text-[9px] text-slate-400 uppercase font-semibold mb-1">
-              <span>FUNCTION & DESCRIPTION</span>
-              <span className="px-1.5 py-0.2 rounded bg-slate-900 border border-slate-800 text-slate-400">
-                {part.category}
-              </span>
-            </div>
-            <p className="text-[11px] text-slate-300 leading-snug bg-slate-900/90 p-2 rounded border border-slate-800/80">
-              {part.function}
-            </p>
-          </div>
-
-          {/* Live Status & Telemetry */}
-          <div className="p-2 rounded bg-slate-900/70 border border-slate-800/80 space-y-1.5">
-            <div className="flex items-center justify-between text-[10px]">
-              <span className="text-slate-400 font-medium">LIVE STATUS:</span>
-              <span
-                className={`px-1.5 py-0.5 rounded font-bold border flex items-center gap-1 text-[10px] ${
-                  status === 'CRITICAL'
-                    ? 'bg-rose-950 text-rose-300 border-rose-600'
-                    : status === 'WARNING'
-                    ? 'bg-amber-950 text-amber-300 border-amber-600'
-                    : 'bg-emerald-950 text-emerald-300 border-emerald-600'
-                }`}
-              >
-                <span
-                  className={`w-1.5 h-1.5 rounded-full ${
-                    status === 'CRITICAL'
-                      ? 'bg-rose-400 animate-ping'
-                      : status === 'WARNING'
-                      ? 'bg-amber-400'
-                      : 'bg-emerald-400'
-                  }`}
-                />
-                {status}
-              </span>
-            </div>
-
-            {part.telemetryKey && telemetry && telemetry[part.telemetryKey] !== undefined && (
-              <div className="flex items-center justify-between text-[10px] pt-1 border-t border-slate-800/70">
-                <span className="text-slate-400 font-medium">{part.telemetryLabel || 'TELEMETRY'}:</span>
-                <span className="font-bold text-sky-300">
-                  {Number(telemetry[part.telemetryKey]).toFixed(1)} {part.unit}
-                </span>
-              </div>
-            )}
-
-            {part.normalRange && (
-              <div className="flex items-center justify-between text-[9px] text-slate-400 pt-0.5">
-                <span>NORMAL RANGE:</span>
-                <span className="text-slate-300 font-medium">{part.normalRange}</span>
-              </div>
-            )}
-          </div>
+    <div
+      onClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+      className={`absolute top-3 right-3 z-20 w-60 max-w-[250px] bg-slate-950/95 backdrop-blur-md border ${theme.border} rounded-lg p-2.5 text-xs shadow-2xl font-mono text-slate-200 select-text transition-all`}
+      style={{
+        boxShadow: `0 10px 25px -5px ${theme.shadow}, 0 0 1px 1px rgba(255, 255, 255, 0.05)`,
+      }}
+    >
+      {/* Header: Component Name + Status Badge + Close */}
+      <div className="flex items-center justify-between gap-1.5 border-b border-slate-800 pb-1.5 mb-2">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className={`w-2 h-2 rounded-full ${theme.dot} flex-shrink-0`} />
+          <h4 className="font-bold text-slate-100 text-[11px] truncate tracking-wide" title={part.name}>
+            {part.name}
+          </h4>
         </div>
-      </Html>
-    </group>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${theme.badgeBg}`}>
+            {faultDetails.status}
+          </span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onClose();
+            }}
+            className="text-slate-400 hover:text-white p-0.5 rounded hover:bg-slate-800 transition-colors"
+            title="Close diagnostic card"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* Fault / Status Section */}
+      <div className="mb-2 p-1.5 rounded bg-slate-900/90 border border-slate-800">
+        <div className="text-[8px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">
+          FAULT / STATUS
+        </div>
+        <div className={`text-[10px] font-bold ${theme.textAccent} break-words leading-tight`}>
+          {faultDetails.faultLabel}
+        </div>
+      </div>
+
+      {/* Telemetry & Baseline */}
+      <div className="mb-2 p-1.5 rounded bg-slate-900/70 border border-slate-800/80 space-y-1 text-[10px]">
+        <div className="flex items-center justify-between">
+          <span className="text-slate-400 text-[9px] truncate mr-1">{faultDetails.telemetryLabel}:</span>
+          <span className="font-bold text-sky-300 flex-shrink-0">{faultDetails.liveValue}</span>
+        </div>
+        <div className="flex items-center justify-between text-[9px] text-slate-400">
+          <span>BASELINE:</span>
+          <span className="text-slate-300 flex-shrink-0">{faultDetails.expectedValue}</span>
+        </div>
+        {faultDetails.deviation !== '--' && (
+          <div className="flex items-center justify-between text-[9px]">
+            <span className="text-slate-400">DEVIATION:</span>
+            <span className={`font-bold flex-shrink-0 ${isFault ? 'text-rose-400' : isWarning ? 'text-amber-400' : 'text-emerald-400'}`}>
+              {faultDetails.deviation}
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Description / Explanation */}
+      <div>
+        <div className="text-[8px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+          DIAGNOSTIC EXPLANATION
+        </div>
+        <p className="text-[9px] text-slate-300 leading-snug bg-slate-900/90 p-1.5 rounded border border-slate-800">
+          {faultDetails.explanation}
+        </p>
+      </div>
+    </div>
   );
 }
 
@@ -315,10 +340,12 @@ function FloatingPartDetailsCard({
  */
 function AeroPistonEngineWorkingAssembly({
   selectedPartId,
+  activePartId = null,
   onSelectPart,
   selectedCylinder,
   telemetry = {},
   digitalTwin = {},
+  ai = {},
   wireframe = false,
   thermalMap = false,
   isCutaway = true,
@@ -338,6 +365,15 @@ function AeroPistonEngineWorkingAssembly({
   const crankshaftRef = useRef();
   const propHubRef = useRef();
   const turboShaftRef = useRef();
+
+  // Active fault materials requiring pulse animation
+  const faultMaterialsRef = useRef([]);
+  faultMaterialsRef.current = [];
+
+  const activePart = activePartId ? ENGINE_PARTS.find((p) => p.id === activePartId) : null;
+  const activePartAnchor = activePart ? activePart.anchor3D : null;
+  const activeFaultInfo = activePart ? getComponentFaultDetails(activePart, telemetry, digitalTwin, ai) : null;
+  const activeAnchorColor = activeFaultInfo?.status === 'FAULT' ? '#ef4444' : activeFaultInfo?.status === 'WARNING' ? '#f59e0b' : '#38bdf8';
 
   // Piston refs
   const piston1Ref = useRef();
@@ -536,6 +572,14 @@ function AeroPistonEngineWorkingAssembly({
     if (coolingFlowRef.current) {
       coolingFlowRef.current.position.z = -((time * 3.0) % 2.0);
     }
+
+    // 6. ANIMATE SUBTLE PULSE ON ACTIVE FAULT MATERIALS
+    if (faultMaterialsRef.current.length > 0) {
+      const pulseIntensity = 0.45 + Math.sin(time * 5.0) * 0.35;
+      for (let i = 0; i < faultMaterialsRef.current.length; i++) {
+        faultMaterialsRef.current[i].emissiveIntensity = pulseIntensity;
+      }
+    }
   });
 
   // Dynamic status and materials generator
@@ -543,7 +587,9 @@ function AeroPistonEngineWorkingAssembly({
     const isSelected = selectedPartId === partId;
     const isHovered = hoveredPartId === partId;
     const partDef = ENGINE_PARTS.find((p) => p.id === partId);
-    const status = partDef ? getComponentStatus(partDef, telemetry, digitalTwin) : 'HEALTHY';
+    const faultInfo = partDef
+      ? getComponentFaultDetails(partDef, telemetry, digitalTwin, ai)
+      : { status: 'NORMAL', isPulsing: false };
 
     let baseColor = defaultProps.color || '#475569';
     let emissiveColor = '#000000';
@@ -590,22 +636,27 @@ function AeroPistonEngineWorkingAssembly({
       opacity = 0.28;
     }
 
-    // Selection / hover highlight
+    // Fault & Anomaly Highlights vs Normal vs Selection
+    // NORMAL = normal individual baseColor, emissiveColor = '#000000', emissiveIntensity = 0
+    // WARNING = yellow/orange glow only on affected part (keeps baseColor)
+    // FAULT = red glow/pulse only on affected part (keeps baseColor)
     if (isSelected) {
       emissiveColor = '#38bdf8';
       emissiveIntensity = 0.6;
     } else if (isHovered) {
       emissiveColor = '#0284c7';
       emissiveIntensity = 0.35;
-    } else if (status === 'CRITICAL') {
+    } else if (faultInfo.status === 'FAULT') {
+      // Red glow only on the affected component
       emissiveColor = '#ef4444';
-      emissiveIntensity = 0.5;
-    } else if (status === 'WARNING') {
+      emissiveIntensity = 0.6;
+    } else if (faultInfo.status === 'WARNING') {
+      // Yellow/orange glow only on the affected component
       emissiveColor = '#f59e0b';
-      emissiveIntensity = 0.3;
+      emissiveIntensity = 0.55;
     }
 
-    return new THREE.MeshStandardMaterial({
+    const material = new THREE.MeshStandardMaterial({
       color: baseColor,
       emissive: emissiveColor,
       emissiveIntensity,
@@ -615,6 +666,12 @@ function AeroPistonEngineWorkingAssembly({
       roughness: defaultProps.roughness !== undefined ? defaultProps.roughness : 0.25,
       metalness: defaultProps.metalness !== undefined ? defaultProps.metalness : 0.85,
     });
+
+    if (faultInfo.status === 'FAULT' && faultInfo.isPulsing && !isSelected && !isHovered) {
+      faultMaterialsRef.current.push(material);
+    }
+
+    return material;
   };
 
   // Materials palette (Enhanced high-contrast aerospace finishes)
@@ -649,18 +706,27 @@ function AeroPistonEngineWorkingAssembly({
     onSelectPart(partId);
   };
 
-  // Filter parts for labeling
-  // SHOW NAMES = show ONLY 5 major labels: Propeller, Cylinders, Crankshaft, Turbocharger, Oil System
-  // HIDE NAMES = zero labels
+  // Show ONLY the selected/affected component by default.
+  // If SHOW NAMES is enabled, show all labels as small 10px badges.
   const visibleLabelParts = useMemo(() => {
-    if (showNames) {
-      return MAJOR_FIVE_LABELS;
+    const list = showNames ? [...MAJOR_FIVE_LABELS] : [];
+
+    // Always show the selected or affected component if one is active
+    if (activePartId) {
+      const alreadyIncluded = list.some((p) => p.id === activePartId);
+      if (!alreadyIncluded) {
+        const activeObj = ENGINE_PARTS.find((p) => p.id === activePartId);
+        if (activeObj) {
+          list.push(activeObj);
+        }
+      }
     }
-    return [];
-  }, [showNames]);
+
+    return list;
+  }, [showNames, activePartId]);
 
   return (
-    <group ref={groupRef} position={[0, 0.06, -0.22]} scale={[1.75, 1.75, 1.75]}>
+    <group ref={groupRef} position={[0, 0, -0.05]} scale={[0.76, 0.76, 0.76]}>
       {/* ============================================================= */}
       {/* 1. CRANKCASE HOUSING (Split Aero Boxer Case) */}
       {/* ============================================================= */}
@@ -1486,29 +1552,40 @@ function AeroPistonEngineWorkingAssembly({
       {/* ============================================================= */}
       {visibleLabelParts.length > 0 && (
         <group>
-          {visibleLabelParts.map((part) => (
-            <ComponentLeaderLabel
-              key={part.id}
-              part={part}
-              onSelect={onSelectPart}
-              isSelected={selectedPartId === part.id}
-            />
-          ))}
+          {visibleLabelParts.map((part) => {
+            const faultInfo = getComponentFaultDetails(part, telemetry, digitalTwin, ai);
+            return (
+              <ComponentLeaderLabel
+                key={part.id}
+                part={part}
+                onSelect={onSelectPart}
+                isSelected={selectedPartId === part.id}
+                isFault={faultInfo.status === 'FAULT'}
+                isWarning={faultInfo.status === 'WARNING'}
+              />
+            );
+          })}
         </group>
       )}
 
       {/* ============================================================= */}
-      {/* 13. FLOATING PART DETAILS CARD (Never covering engine) */}
+      {/* 13. ACTIVE COMPONENT 3D ANCHOR & HIGHLIGHT RING */}
       {/* ============================================================= */}
-      <FloatingPartDetailsCard
-        selectedPartId={selectedPartId}
-        onClose={() => onSelectPart(null)}
-        telemetry={telemetry}
-        digitalTwin={digitalTwin}
-      />
+      {activePartAnchor && (
+        <group position={activePartAnchor}>
+          <mesh>
+            <sphereGeometry args={[0.035, 16, 16]} />
+            <meshBasicMaterial color={activeAnchorColor} />
+          </mesh>
+          <mesh rotation={[Math.PI / 2, 0, 0]}>
+            <ringGeometry args={[0.055, 0.075, 24]} />
+            <meshBasicMaterial color={activeAnchorColor} transparent opacity={0.8} side={THREE.DoubleSide} />
+          </mesh>
+        </group>
+      )}
 
       {/* Ground Reference Grid */}
-      <gridHelper args={[7, 14, '#0284c7', '#1e293b']} position={[0, -1.15, 0.22]} />
+      <gridHelper args={[6, 12, '#0284c7', '#1e293b']} position={[0, -0.75, 0]} />
     </group>
   );
 }
@@ -1601,13 +1678,14 @@ function CameraPresetHandler({ controlsRef, cameraTarget, onPresetDone }) {
  * camera presets, cutaway mode, flow toggles, and live telemetry bindings.
  */
 export default function AeroPistonEngine3D({
-  selectedPartId = 'cylinder_head',
+  selectedPartId = null,
   onSelectPart = () => {},
   selectedCylinder = 'CYLINDER 1',
   onSelectCylinder = () => {},
   onSwitchMode = () => {},
   telemetry = {},
   digitalTwin = {},
+  ai = {},
   isConnected = false,
   height = 560,
 }) {
@@ -1615,7 +1693,7 @@ export default function AeroPistonEngine3D({
   const [isCutaway, setIsCutaway] = useState(true);
   const [exploded, setExploded] = useState(false);
   const [thermalMap, setThermalMap] = useState(false);
-  const [showNames, setShowNames] = useState(false); // Show Names: ON/OFF
+  const [showNames, setShowNames] = useState(false); // Show ONLY selected/affected component by default
 
   // Flow toggles
   const [showAirFuel, setShowAirFuel] = useState(true);
@@ -1635,23 +1713,65 @@ export default function AeroPistonEngine3D({
   const [activePreset, setActivePreset] = useState('ISOMETRIC');
   const [isFullscreen, setIsFullscreen] = useState(false);
 
+  // Compute overall AI / Digital Twin 3D engine status (NORMAL / WARNING / FAULT)
+  const overallStatus = useMemo(() => {
+    if (ai?.predicted_fault && ai.predicted_fault !== 'NORMAL') return 'FAULT';
+    if (digitalTwin?.overall_status === 'CRITICAL') return 'FAULT';
+    if (ai?.anomaly_status === 'ANOMALOUS') return 'WARNING';
+    if (digitalTwin?.overall_status === 'WARNING') return 'WARNING';
+    const deviations = digitalTwin?.deviations || {};
+    if (Object.values(deviations).some((d) => d?.status === 'CRITICAL')) return 'FAULT';
+    if (Object.values(deviations).some((d) => d?.status === 'WARNING')) return 'WARNING';
+    return 'NORMAL';
+  }, [ai, digitalTwin]);
+
+  const affectedPartId = useMemo(() => {
+    return getActiveFaultedPartId(ai, digitalTwin);
+  }, [ai, digitalTwin]);
+
+  const [dismissedPartId, setDismissedPartId] = useState(null);
+
+  // If a new AI fault occurs, reset dismissed state so the operator sees the fault
+  const prevAffectedRef = useRef(affectedPartId);
+  useEffect(() => {
+    if (affectedPartId && affectedPartId !== prevAffectedRef.current) {
+      setDismissedPartId(null);
+      prevAffectedRef.current = affectedPartId;
+    }
+  }, [affectedPartId]);
+
+  // Which part is currently active?
+  // 1. User clicked part takes highest priority.
+  // 2. If no part clicked, but an AI fault is active (and not dismissed), show the affected part.
+  const activePartId = selectedPartId || (dismissedPartId === affectedPartId ? null : affectedPartId);
+
+  const activeCardPart = useMemo(() => {
+    return activePartId ? ENGINE_PARTS.find((p) => p.id === activePartId) || null : null;
+  }, [activePartId]);
+
+  const activeCardFaultDetails = useMemo(() => {
+    return activeCardPart
+      ? getComponentFaultDetails(activeCardPart, telemetry, digitalTwin, ai)
+      : null;
+  }, [activeCardPart, telemetry, digitalTwin, ai]);
+
   const containerRef = useRef();
   const canvasContainerRef = useRef();
   const controlsRef = useRef();
 
-  // Preset definitions with prominent framing (~70% viewport fill, centered)
+  // Preset definitions with balanced framing (~50-60% viewport fill, perfectly centered)
   const applyPreset = useCallback((presetName) => {
     setActivePreset(presetName);
     if (presetName === 'ISOMETRIC') {
-      setCameraTarget({ pos: [2.4, 1.35, 2.5], target: [0, 0, 0] });
+      setCameraTarget({ pos: [3.1, 1.7, 3.1], target: [0, 0, 0] });
     } else if (presetName === 'FRONT') {
-      setCameraTarget({ pos: [0, 0.08, 3.6], target: [0, 0, 0] });
+      setCameraTarget({ pos: [0, 0.05, 4.4], target: [0, 0, 0] });
     } else if (presetName === 'SIDE') {
-      setCameraTarget({ pos: [3.6, 0.12, 0], target: [0, 0, 0] });
+      setCameraTarget({ pos: [4.4, 0.1, 0], target: [0, 0, 0] });
     } else if (presetName === 'TOP') {
-      setCameraTarget({ pos: [0, 4.0, 0.01], target: [0, 0, 0] });
+      setCameraTarget({ pos: [0, 4.8, 0.01], target: [0, 0, 0] });
     } else if (presetName === 'RESET') {
-      setCameraTarget({ pos: [2.4, 1.35, 2.5], target: [0, 0, 0] });
+      setCameraTarget({ pos: [3.1, 1.7, 3.1], target: [0, 0, 0] });
       setActivePreset('ISOMETRIC');
     }
   }, []);
@@ -1709,6 +1829,40 @@ export default function AeroPistonEngine3D({
             <span className="hidden md:inline text-[10px] px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-400">
               Rotax 914 / 915 iS Turbocharged Boxer-4
             </span>
+
+            {/* Small Status Indicator: NORMAL / WARNING / FAULT */}
+            <div
+              className={`px-2 py-0.5 rounded text-[10px] font-bold border flex items-center gap-1.5 transition-all shadow ${
+                overallStatus === 'FAULT'
+                  ? 'bg-rose-950/90 border-rose-600 text-rose-300'
+                  : overallStatus === 'WARNING'
+                  ? 'bg-amber-950/90 border-amber-600 text-amber-300'
+                  : 'bg-emerald-950/80 border-emerald-700 text-emerald-300'
+              }`}
+              title={
+                overallStatus === 'FAULT'
+                  ? `Fault State: ${ai?.predicted_fault || 'Critical'}`
+                  : overallStatus === 'WARNING'
+                  ? 'Warning / Anomaly Detected'
+                  : 'Nominal Engine Operation'
+              }
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  overallStatus === 'FAULT'
+                    ? 'bg-rose-400 animate-ping'
+                    : overallStatus === 'WARNING'
+                    ? 'bg-amber-400 animate-pulse'
+                    : 'bg-emerald-400'
+                }`}
+              />
+              <span>STATUS: {overallStatus}</span>
+              {overallStatus === 'FAULT' && ai?.predicted_fault && ai.predicted_fault !== 'NORMAL' && (
+                <span className="hidden xl:inline text-[9px] text-rose-300/90 font-normal">
+                  [{ai.predicted_fault.replace(/_/g, ' ')}]
+                </span>
+              )}
+            </div>
           </div>
 
           {/* Right Top Controls: 3D/2D Toggle, Show Names Toggle, Cutaway, Thermal, Presets */}
@@ -1901,7 +2055,7 @@ export default function AeroPistonEngine3D({
               display: 'block',
             }}
             dpr={[1, 2]}
-            camera={{ position: [2.4, 1.35, 2.5], fov: 40 }}
+            camera={{ position: [3.1, 1.7, 3.1], fov: 38 }}
             shadows
             gl={{ antialias: true, alpha: false, powerPreference: 'high-performance' }}
             onPointerMissed={() => {
@@ -1926,10 +2080,12 @@ export default function AeroPistonEngine3D({
 
             <AeroPistonEngineWorkingAssembly
               selectedPartId={selectedPartId}
+              activePartId={activePartId}
               onSelectPart={onSelectPart}
               selectedCylinder={selectedCylinder}
               telemetry={telemetry}
               digitalTwin={digitalTwin}
+              ai={ai}
               wireframe={wireframe}
               thermalMap={thermalMap}
               isCutaway={isCutaway}
@@ -1967,6 +2123,18 @@ export default function AeroPistonEngine3D({
               maxDistance={9.0}
             />
           </Canvas>
+
+          {/* Compact Diagnostic Card: Placed beside 3D viewport without covering the engine */}
+          {activeCardPart && (
+            <CompactDiagnosticCard
+              part={activeCardPart}
+              faultDetails={activeCardFaultDetails}
+              onClose={() => {
+                onSelectPart(null);
+                setDismissedPartId(activeCardPart.id);
+              }}
+            />
+          )}
 
           {/* Canvas Bottom Bar: Playback & Flow Toggles */}
           <div className="absolute bottom-0 inset-x-0 z-10 px-3.5 py-2 flex flex-wrap items-center justify-between gap-2 bg-gradient-to-t from-slate-950 via-slate-950/80 to-transparent pointer-events-none">

@@ -10,6 +10,8 @@ Software-only research prototype.
 from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, Field, field_validator
 
+from backend.app.schemas.uav import UAVState, UAVStateResponse, FleetStateResponse
+
 
 # =============================================================================
 # Health & Status Schemas
@@ -51,6 +53,7 @@ class TelemetryInput(BaseModel):
 
 class TelemetryResponse(BaseModel):
     """Full simulated telemetry snapshot output."""
+    uav_id: str = Field(default="UAV-001", description="Unique UAV identifier")
     engine_id: str
     mission_id: str
     timestamp: str
@@ -78,6 +81,7 @@ class TelemetryResponse(BaseModel):
 # =============================================================================
 class SimulationStartRequest(BaseModel):
     """Parameters for initializing or updating the virtual aero engine simulation."""
+    uav_id: str = Field(default="UAV-001", description="Unique UAV identifier")
     engine_id: str = Field(default="AERO-001", description="Engine identifier")
     mission_id: str = Field(default="MSN-001", description="Mission identifier")
     rpm_target: Optional[float] = Field(default=None, ge=800.0, le=6000.0, description="Target RPM override")
@@ -100,6 +104,23 @@ class SimulationStartRequest(BaseModel):
         if v.upper() not in valid:
             raise ValueError(f"Invalid flight_phase '{v}'. Permitted: {valid}")
         return v.upper()
+
+    @field_validator("fault_type")
+    @classmethod
+    def validate_fault_type(cls, v: str) -> str:
+        valid = ["NORMAL", "INJECTOR_ABNORMALITY", "COOLING_PROBLEM", "LUBRICATION_PROBLEM", "MISFIRE", "SENSOR_ANOMALY"]
+        if v.upper() not in valid:
+            raise ValueError(f"Invalid fault_type '{v}'. Permitted: {valid}")
+        return v.upper()
+
+
+class SimulationFaultRequest(BaseModel):
+    """Parameters for injecting or clearing an operational fault in an active UAV simulation."""
+    uav_id: Optional[str] = Field(default="UAV-001", description="Target UAV identifier")
+    fault_type: str = Field(default="NORMAL", description="Fault mode: NORMAL, INJECTOR_ABNORMALITY, COOLING_PROBLEM, LUBRICATION_PROBLEM, MISFIRE, SENSOR_ANOMALY")
+    severity: float = Field(default=0.8, ge=0.0, le=1.0, description="Fault intensity [0.0, 1.0]")
+    degradation: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Optional mechanical degradation level [0.0, 1.0]")
+    target_sensor: Optional[str] = Field(default=None, description="Optional target sensor for SENSOR_ANOMALY")
 
     @field_validator("fault_type")
     @classmethod
@@ -142,6 +163,7 @@ class DigitalTwinDeviationResponse(BaseModel):
 
 class DigitalTwinResponse(BaseModel):
     """Comprehensive Digital Twin state representation."""
+    uav_id: str = Field(default="UAV-001", description="Unique UAV identifier")
     timestamp: str
     engine_id: str
     mission_id: str
@@ -195,6 +217,7 @@ class AIExplanationResponse(BaseModel):
 # =============================================================================
 class MissionRiskResponse(BaseModel):
     """Complete Mission Risk and Reliability decision-support output."""
+    uav_id: str = Field(default="UAV-001", description="Unique UAV identifier")
     timestamp: str
     mission_duration_hours: float
     altitude: float

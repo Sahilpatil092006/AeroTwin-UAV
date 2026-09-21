@@ -7,6 +7,7 @@ and mission risk calculations for the REST API endpoints.
 Software-only research prototype.
 """
 
+from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, Tuple, List
 import pandas as pd
 import numpy as np
@@ -27,38 +28,221 @@ from backend.app.decision import (
     MissionDecision
 )
 from backend.app.schemas import SimulationStartRequest
+from backend.app.schemas.uav import UAVState
+
+
+@dataclass
+class UAVContext:
+    """
+    Encapsulates all simulation, digital twin, AI and mission state
+    associated with an individual UAV identifier.
+    """
+    uav_id: str = "UAV-001"
+    simulator: Optional[AeroPistonEngineSimulator] = None
+    engine_state: Optional[EngineState] = None
+    twin_state: Optional[DigitalTwinState] = None
+    decision: Optional[MissionDecision] = None
+    mission_params: Optional[MissionParameters] = None
+    uav_state: Optional[UAVState] = None
+    is_manual: bool = False
+
+
+
+# =============================================================================
+# Standard 5-UAV Fleet Operational & Diagnostic Profiles
+# =============================================================================
+FLEET_UAV_CONFIGS: Dict[str, Dict[str, Any]] = {
+    "UAV-001": {
+        "engine_id": "AERO-001",
+        "mission_id": "MSN-001",
+        "flight_phase": "CRUISE",
+        "rpm_target": 2400.0,
+        "throttle": 75.0,
+        "altitude": 1500.0,
+        "ambient_temperature": 22.0,
+        "humidity": 45.0,
+        "wind_speed": 5.0,
+        "mission_duration_hours": 10.0,
+        "degradation": 0.04,
+        "fault_type": "NORMAL",
+        "fault_severity": 0.0,
+        "seed": 42,
+    },
+    "UAV-002": {
+        "engine_id": "AERO-002",
+        "mission_id": "MSN-002",
+        "flight_phase": "CLIMB",
+        "rpm_target": 2550.0,
+        "throttle": 85.0,
+        "altitude": 3200.0,
+        "ambient_temperature": 10.0,
+        "humidity": 60.0,
+        "wind_speed": 9.0,
+        "mission_duration_hours": 6.0,
+        "degradation": 0.12,
+        "fault_type": "NORMAL",
+        "fault_severity": 0.0,
+        "seed": 102,
+    },
+    "UAV-003": {
+        "engine_id": "AERO-003",
+        "mission_id": "MSN-003",
+        "flight_phase": "CRUISE",
+        "rpm_target": 2350.0,
+        "throttle": 72.0,
+        "altitude": 1200.0,
+        "ambient_temperature": 35.0,
+        "humidity": 35.0,
+        "wind_speed": 4.0,
+        "mission_duration_hours": 8.0,
+        "degradation": 0.25,
+        "fault_type": "COOLING_PROBLEM",
+        "fault_severity": 0.35,
+        "seed": 203,
+    },
+    "UAV-004": {
+        "engine_id": "AERO-004",
+        "mission_id": "MSN-004",
+        "flight_phase": "DESCENT",
+        "rpm_target": 1950.0,
+        "throttle": 40.0,
+        "altitude": 900.0,
+        "ambient_temperature": 20.0,
+        "humidity": 55.0,
+        "wind_speed": 6.0,
+        "mission_duration_hours": 4.0,
+        "degradation": 0.08,
+        "fault_type": "SENSOR_ANOMALY",
+        "fault_severity": 0.40,
+        "seed": 304,
+    },
+    "UAV-005": {
+        "engine_id": "AERO-005",
+        "mission_id": "MSN-005",
+        "flight_phase": "CRUISE",
+        "rpm_target": 2450.0,
+        "throttle": 78.0,
+        "altitude": 2200.0,
+        "ambient_temperature": 28.0,
+        "humidity": 50.0,
+        "wind_speed": 7.0,
+        "mission_duration_hours": 12.0,
+        "degradation": 0.68,
+        "fault_type": "LUBRICATION_PROBLEM",
+        "fault_severity": 0.60,
+        "seed": 405,
+    },
+}
+
+FLEET_UAV_IDS: List[str] = list(FLEET_UAV_CONFIGS.keys())
 
 
 class TwinServiceManager:
     """
     Manages in-memory state for active engine simulation, digital twin tracking,
-    and mission risk evaluations across API requests.
+    and mission risk evaluations across API requests for single and multi-UAV fleets.
     """
 
     def __init__(self):
-        self.simulator: Optional[AeroPistonEngineSimulator] = None
+        self.default_uav_id: str = "UAV-001"
+        self.active_manual_uav_id: Optional[str] = None
+        self._uav_contexts: Dict[str, UAVContext] = {
+            uid: UAVContext(uav_id=uid) for uid in FLEET_UAV_IDS
+        }
         self.digital_twin = DigitalTwin()
         self.decision_engine = MissionDecisionEngine()
 
-        self.current_engine_state: Optional[EngineState] = None
-        self.current_twin_state: Optional[DigitalTwinState] = None
-        self.current_decision: Optional[MissionDecision] = None
-        self.current_mission_params: Optional[MissionParameters] = None
+    def _get_or_create_context(self, uav_id: Optional[str] = None) -> UAVContext:
+        """Retrieves or initializes the UAVContext for a specific UAV identifier."""
+        raw_id = uav_id or self.default_uav_id
+        resolved_id = str(raw_id).strip().upper()
+        if not resolved_id:
+            resolved_id = self.default_uav_id
+        if resolved_id not in self._uav_contexts:
+            self._uav_contexts[resolved_id] = UAVContext(uav_id=resolved_id)
+        return self._uav_contexts[resolved_id]
 
-    def start_simulation(self, request: SimulationStartRequest) -> EngineState:
+    # -------------------------------------------------------------------------
+    # Backward-compatible property delegates targeting default UAV (UAV-001)
+    # -------------------------------------------------------------------------
+    @property
+    def simulator(self) -> Optional[AeroPistonEngineSimulator]:
+        return self._get_or_create_context(self.default_uav_id).simulator
+
+    @simulator.setter
+    def simulator(self, value: Optional[AeroPistonEngineSimulator]):
+        self._get_or_create_context(self.default_uav_id).simulator = value
+
+    @property
+    def current_engine_state(self) -> Optional[EngineState]:
+        return self._get_or_create_context(self.default_uav_id).engine_state
+
+    @current_engine_state.setter
+    def current_engine_state(self, value: Optional[EngineState]):
+        self._get_or_create_context(self.default_uav_id).engine_state = value
+
+    @property
+    def current_twin_state(self) -> Optional[DigitalTwinState]:
+        return self._get_or_create_context(self.default_uav_id).twin_state
+
+    @current_twin_state.setter
+    def current_twin_state(self, value: Optional[DigitalTwinState]):
+        self._get_or_create_context(self.default_uav_id).twin_state = value
+
+    @property
+    def current_decision(self) -> Optional[MissionDecision]:
+        return self._get_or_create_context(self.default_uav_id).decision
+
+    @current_decision.setter
+    def current_decision(self, value: Optional[MissionDecision]):
+        self._get_or_create_context(self.default_uav_id).decision = value
+
+    @property
+    def current_mission_params(self) -> Optional[MissionParameters]:
+        return self._get_or_create_context(self.default_uav_id).mission_params
+
+    @current_mission_params.setter
+    def current_mission_params(self, value: Optional[MissionParameters]):
+        self._get_or_create_context(self.default_uav_id).mission_params = value
+
+    def start_simulation(
+        self,
+        request: SimulationStartRequest,
+        uav_id: Optional[str] = None,
+        is_manual: bool = True
+    ) -> EngineState:
         """
-        Initializes and starts a new virtual aero engine simulation.
-        Advances the first timestep and updates the Digital Twin and Decision Engine.
+        Initializes and starts a virtual aero engine simulation for a given UAV.
+        Advances the first timestep and synchronizes Digital Twin, Decision Engine, and UAVState.
+        Marks the UAV as having authoritative manual simulation state when is_manual is True.
         """
-        self.simulator = AeroPistonEngineSimulator(
-            engine_id=request.engine_id,
-            mission_id=request.mission_id,
-            seed=request.seed,
-            degradation=request.degradation
-        )
+        raw_uav_id = getattr(request, "uav_id", None) or uav_id or self.default_uav_id
+        target_uav_id = str(raw_uav_id).strip().upper()
+        ctx = self._get_or_create_context(target_uav_id)
+
+        if is_manual:
+            ctx.is_manual = True
+            self.active_manual_uav_id = target_uav_id
+
+        if ctx.simulator is None:
+            ctx.simulator = AeroPistonEngineSimulator(
+                engine_id=request.engine_id,
+                mission_id=request.mission_id,
+                seed=request.seed,
+                degradation=request.degradation,
+                uav_id=target_uav_id
+            )
+        else:
+            # Preserve existing simulation engine instance across flight phase and parameter updates
+            if request.engine_id:
+                ctx.simulator.engine_id = request.engine_id
+            if request.mission_id:
+                ctx.simulator.mission_id = request.mission_id
+            if request.degradation is not None:
+                ctx.simulator.set_degradation(request.degradation)
 
         # Configure initial inputs
-        self.simulator.set_inputs(
+        ctx.simulator.set_inputs(
             rpm_target=request.rpm_target,
             throttle=request.throttle,
             altitude=request.altitude,
@@ -71,12 +255,14 @@ class TwinServiceManager:
 
         # Inject fault if non-normal
         if request.fault_type != "NORMAL" and request.fault_severity > 0.0:
-            self.simulator.inject_fault(
+            ctx.simulator.inject_fault(
                 fault_type=request.fault_type,
                 severity=request.fault_severity
             )
+        else:
+            ctx.simulator.clear_fault()
 
-        self.current_mission_params = MissionParameters(
+        ctx.mission_params = MissionParameters(
             mission_duration_hours=request.mission_duration_hours,
             altitude=request.altitude,
             ambient_temperature=request.ambient_temperature,
@@ -85,42 +271,122 @@ class TwinServiceManager:
         )
 
         # Run first discrete step to establish initial telemetry
-        self.current_engine_state = self.simulator.step(dt=1.0)
+        ctx.engine_state = ctx.simulator.step(dt=1.0)
 
         # Synchronize Digital Twin
-        self.current_twin_state = self.digital_twin.update(self.current_engine_state)
+        ctx.twin_state = self.digital_twin.update(ctx.engine_state)
 
         # Synchronize Mission Decision Engine
-        self.current_decision = self.decision_engine.evaluate(
-            twin_state=self.current_twin_state,
-            mission_params=self.current_mission_params
+        ctx.decision = self.decision_engine.evaluate(
+            twin_state=ctx.twin_state,
+            mission_params=ctx.mission_params
         )
 
-        return self.current_engine_state
+        # Synchronize unified UAVState
+        ctx.uav_state = UAVState.from_states(
+            engine_state=ctx.engine_state,
+            twin_state=ctx.twin_state,
+            decision=ctx.decision,
+            uav_id=target_uav_id
+        )
 
-    def get_current_simulation(self) -> Optional[EngineState]:
-        """Returns the latest simulator telemetry state if an active simulation exists."""
-        return self.current_engine_state
+        return ctx.engine_state
 
-    def get_digital_twin_state(self) -> Optional[DigitalTwinState]:
-        """Returns the latest Digital Twin state."""
-        return self.current_twin_state
+    def inject_fault(
+        self,
+        fault_type: str,
+        severity: float = 0.8,
+        uav_id: Optional[str] = None,
+        degradation: Optional[float] = None,
+        target_sensor: Optional[str] = None
+    ) -> EngineState:
+        """
+        Injects or clears an operational fault for the specified or active manual UAV.
+        Ensures the UAV simulation is initialized, marks it as authoritative manual state,
+        applies the fault to AeroPistonEngineSimulator, advances a step to compute physical effects,
+        and synchronizes the Digital Twin, Mission Decision Engine, and unified UAVState.
+        """
+        raw_uav_id = uav_id or self.active_manual_uav_id or self.default_uav_id
+        target_uav_id = str(raw_uav_id).strip().upper()
+        ctx = self._get_or_create_context(target_uav_id)
+        if ctx.simulator is None or ctx.engine_state is None:
+            self.ensure_simulation(uav_id=target_uav_id)
+            ctx = self._get_or_create_context(target_uav_id)
+
+        ctx.is_manual = True
+        self.active_manual_uav_id = target_uav_id
+
+        clean_fault = str(fault_type).strip().upper()
+        if clean_fault == "NORMAL" or severity <= 0.0:
+            ctx.simulator.clear_fault()
+        else:
+            ctx.simulator.inject_fault(
+                fault_type=clean_fault,
+                severity=severity,
+                target_sensor=target_sensor
+            )
+
+        if degradation is not None:
+            ctx.simulator.set_degradation(degradation)
+
+        # Advance one discrete step to apply fault perturbations immediately
+        ctx.engine_state = ctx.simulator.step(dt=1.0)
+
+        # Synchronize Digital Twin
+        ctx.twin_state = self.digital_twin.update(ctx.engine_state)
+
+        # Synchronize Mission Decision Engine
+        params = ctx.mission_params or MissionParameters(
+            mission_duration_hours=10.0,
+            altitude=ctx.engine_state.altitude,
+            ambient_temperature=ctx.engine_state.ambient_temperature,
+            throttle=ctx.engine_state.throttle,
+            flight_phase=ctx.engine_state.flight_phase
+        )
+        ctx.decision = self.decision_engine.evaluate(
+            twin_state=ctx.twin_state,
+            mission_params=params
+        )
+
+        # Synchronize unified UAVState
+        ctx.uav_state = UAVState.from_states(
+            engine_state=ctx.engine_state,
+            twin_state=ctx.twin_state,
+            decision=ctx.decision,
+            uav_id=target_uav_id
+        )
+
+        return ctx.engine_state
+
+    def get_current_simulation(self, uav_id: Optional[str] = None) -> Optional[EngineState]:
+        """Returns the latest simulator telemetry state if an active simulation exists for uav_id."""
+        target_id = str(uav_id or self.active_manual_uav_id or self.default_uav_id).strip().upper()
+        ctx = self._uav_contexts.get(target_id)
+        return ctx.engine_state if ctx else None
+
+    def get_digital_twin_state(self, uav_id: Optional[str] = None) -> Optional[DigitalTwinState]:
+        """Returns the latest Digital Twin state for uav_id."""
+        target_id = str(uav_id or self.active_manual_uav_id or self.default_uav_id).strip().upper()
+        ctx = self._uav_contexts.get(target_id)
+        return ctx.twin_state if ctx else None
 
     def get_mission_decision(
         self,
         duration_hours: Optional[float] = None,
         altitude: Optional[float] = None,
         ambient_temp: Optional[float] = None,
-        throttle: Optional[float] = None
+        throttle: Optional[float] = None,
+        uav_id: str = "UAV-001"
     ) -> Optional[MissionDecision]:
         """
-        Returns mission risk decision. If override parameters are provided,
+        Returns mission risk decision for uav_id. If override parameters are provided,
         performs dynamic evaluation without altering stored telemetry.
         """
-        if self.current_twin_state is None:
+        ctx = self._uav_contexts.get(uav_id)
+        if ctx is None or ctx.twin_state is None:
             return None
 
-        params = self.current_mission_params or MissionParameters()
+        params = ctx.mission_params or MissionParameters()
         if any(v is not None for v in [duration_hours, altitude, ambient_temp, throttle]):
             params = MissionParameters(
                 mission_duration_hours=duration_hours if duration_hours is not None else params.mission_duration_hours,
@@ -130,7 +396,58 @@ class TwinServiceManager:
                 flight_phase=params.flight_phase
             )
 
-        return self.decision_engine.evaluate(self.current_twin_state, params)
+        return self.decision_engine.evaluate(ctx.twin_state, params)
+
+    def get_uav_state(self, uav_id: str = "UAV-001") -> Optional[UAVState]:
+        """
+        Returns the unified UAVState for the specified uav_id.
+        Constructs dynamically from component states if not already cached.
+        """
+        # If it's a known fleet UAV, ensure its simulation exists
+        if uav_id in FLEET_UAV_IDS:
+            ctx = self._get_or_create_context(uav_id)
+            if ctx.simulator is None or ctx.engine_state is None:
+                self.ensure_simulation(uav_id=uav_id)
+        elif uav_id not in self._uav_contexts:
+            return None
+
+        ctx = self._uav_contexts.get(uav_id)
+        if ctx is None or ctx.simulator is None or ctx.engine_state is None:
+            return None
+
+        if ctx.uav_state is None and ctx.engine_state is not None:
+            ctx.uav_state = UAVState.from_states(
+                engine_state=ctx.engine_state,
+                twin_state=ctx.twin_state,
+                decision=ctx.decision,
+                uav_id=uav_id
+            )
+        return ctx.uav_state
+
+    def ensure_fleet_simulation(self) -> None:
+        """
+        Ensures all 5 fleet UAV simulations are initialized with their designated profiles,
+        preserving any UAV currently under authoritative manual simulation.
+        """
+        for uid in FLEET_UAV_IDS:
+            ctx = self._get_or_create_context(uid)
+            if not ctx.is_manual or ctx.engine_state is None:
+                self.ensure_simulation(uav_id=uid)
+
+    def list_uav_ids(self) -> List[str]:
+        """Returns the list of all registered or active fleet UAV identifiers."""
+        self.ensure_fleet_simulation()
+        return list(FLEET_UAV_IDS)
+
+    def get_all_uav_states(self) -> Dict[str, UAVState]:
+        """Returns a mapping of uav_id -> UAVState for all 5 fleet UAVs."""
+        self.ensure_fleet_simulation()
+        states: Dict[str, UAVState] = {}
+        for uid in FLEET_UAV_IDS:
+            st = self.get_uav_state(uid)
+            if st is not None:
+                states[uid] = st
+        return states
 
     # -------------------------------------------------------------------------
     # Direct AI Inference Helpers
@@ -186,149 +503,200 @@ class TwinServiceManager:
         engine_id: str = "ENGINE-001",
         mission_id: str = "MISSION-001",
         flight_phase: str = "CRUISE",
-        seed: int = 42
+        seed: int = 42,
+        uav_id: str = "UAV-001"
     ) -> EngineState:
         """
-        Ensures an active simulation exists. If not, initializes a deterministic
-        default demonstration scenario in CRUISE mode.
+        Ensures an active simulation exists for uav_id. If not, initializes with
+        the designated fleet profile or default parameters.
+        Preserves active manual simulation state without overwriting with fleet defaults.
         """
-        if self.simulator is None or self.current_engine_state is None:
+        raw_id = uav_id or self.default_uav_id
+        target_uav_id = str(raw_id).strip().upper()
+        ctx = self._get_or_create_context(target_uav_id)
+        if ctx.is_manual and ctx.engine_state is not None:
+            return ctx.engine_state
+        if ctx.simulator is None or ctx.engine_state is None:
+            cfg = FLEET_UAV_CONFIGS.get(target_uav_id, {})
             default_req = SimulationStartRequest(
-                engine_id=engine_id,
-                mission_id=mission_id,
-                rpm_target=2400.0,
-                throttle=75.0,
-                altitude=1500.0,
-                ambient_temperature=25.0,
-                humidity=45.0,
-                wind_speed=5.0,
-                mission_duration_hours=10.0,
-                flight_phase=flight_phase,
-                degradation=0.05,
-                fault_type="NORMAL",
-                fault_severity=0.0,
-                seed=seed
+                uav_id=target_uav_id,
+                engine_id=cfg.get("engine_id", engine_id),
+                mission_id=cfg.get("mission_id", mission_id),
+                rpm_target=cfg.get("rpm_target", 2400.0),
+                throttle=cfg.get("throttle", 75.0),
+                altitude=cfg.get("altitude", 1500.0),
+                ambient_temperature=cfg.get("ambient_temperature", 25.0),
+                humidity=cfg.get("humidity", 45.0),
+                wind_speed=cfg.get("wind_speed", 5.0),
+                mission_duration_hours=cfg.get("mission_duration_hours", 10.0),
+                flight_phase=cfg.get("flight_phase", flight_phase),
+                degradation=cfg.get("degradation", 0.05),
+                fault_type=cfg.get("fault_type", "NORMAL"),
+                fault_severity=cfg.get("fault_severity", 0.0),
+                seed=cfg.get("seed", seed)
             )
-            return self.start_simulation(default_req)
-        return self.current_engine_state
+            return self.start_simulation(default_req, uav_id=target_uav_id, is_manual=False)
+        return ctx.engine_state
 
-    def step_simulation(self, dt: float = 1.0) -> Dict[str, Any]:
+    def step_fleet_simulation(self, dt: float = 1.0) -> Dict[str, UAVState]:
         """
-        Advances the virtual engine simulation by dt seconds, updates
-        the Digital Twin, evaluates Mission Risk, and returns a verified,
-        numerically safe telemetry dictionary for streaming.
+        Advances all 5 UAV simulations by dt seconds, updates their digital twins,
+        AI predictions, and mission risk, returning a mapping of uav_id -> UAVState.
         """
-        if self.simulator is None or self.current_engine_state is None:
-            self.ensure_simulation()
+        self.ensure_fleet_simulation()
+        states: Dict[str, UAVState] = {}
+        for uav_id in FLEET_UAV_IDS:
+            ctx = self._get_or_create_context(uav_id)
+            if ctx.simulator is not None and ctx.engine_state is not None:
+                # 1. Advance simulator (uses manual inputs if manual, or fleet profile if not)
+                ctx.engine_state = ctx.simulator.step(dt=dt)
 
-        # 1. Advance simulator
-        self.current_engine_state = self.simulator.step(dt=dt)
+                # 2. Update Digital Twin
+                ctx.twin_state = self.digital_twin.update(ctx.engine_state)
 
-        # 2. Update Digital Twin
-        self.current_twin_state = self.digital_twin.update(self.current_engine_state)
+                # 3. Calculate Mission Risk
+                params = ctx.mission_params or MissionParameters(
+                    mission_duration_hours=10.0,
+                    altitude=ctx.engine_state.altitude,
+                    ambient_temperature=ctx.engine_state.ambient_temperature,
+                    throttle=ctx.engine_state.throttle,
+                    flight_phase=ctx.engine_state.flight_phase
+                )
+                ctx.decision = self.decision_engine.evaluate(
+                    twin_state=ctx.twin_state,
+                    mission_params=params
+                )
 
-        # 3. Calculate Mission Risk
-        params = self.current_mission_params or MissionParameters(
-            mission_duration_hours=10.0,
-            altitude=self.current_engine_state.altitude,
-            ambient_temperature=self.current_engine_state.ambient_temperature,
-            throttle=self.current_engine_state.throttle,
-            flight_phase=self.current_engine_state.flight_phase
-        )
-        self.current_decision = self.decision_engine.evaluate(
-            twin_state=self.current_twin_state,
-            mission_params=params
-        )
+                # 4. Synchronize unified UAVState
+                ctx.uav_state = UAVState.from_states(
+                    engine_state=ctx.engine_state,
+                    twin_state=ctx.twin_state,
+                    decision=ctx.decision,
+                    uav_id=uav_id
+                )
+                states[uav_id] = ctx.uav_state
+        return states
 
-        # 4. Build and return complete real-time JSON packet
-        return self.build_telemetry_packet()
-
-    def build_telemetry_packet(self) -> Dict[str, Any]:
+    def step_simulation(self, dt: float = 1.0, uav_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        Constructs a complete, validated, JSON-serializable telemetry and analysis packet.
+        Advances the virtual engine simulation for all fleet UAVs by dt seconds.
+        For UAVs with active manual simulations, advances their authoritative manual simulation.
+        For other UAVs, advances their fleet simulation.
+        Returns a verified, numerically safe telemetry dictionary for streaming uav_id.
+        """
+        # Advance all 5 fleet UAVs together
+        self.step_fleet_simulation(dt=dt)
+        target_id = str(uav_id or self.active_manual_uav_id or self.default_uav_id).strip().upper()
+        return self.build_telemetry_packet(uav_id=target_id)
+
+    def build_telemetry_packet(self, uav_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Constructs a complete, validated, JSON-serializable telemetry and analysis packet for uav_id.
         Guarantees:
         - No NaN or Infinity
         - RUL >= 0
         - Health & Fitness in [0, 100]
         - Anomaly score in [0, 1]
         - Probabilities in [0, 1]
+        - Preserves all single-UAV legacy dashboard fields
+        - Includes clean unified UAVState
         """
+        target_id = str(uav_id or self.active_manual_uav_id or self.default_uav_id).strip().upper()
+        ctx = self._get_or_create_context(target_id)
         if (
-            self.current_engine_state is None
-            or self.current_twin_state is None
-            or self.current_decision is None
+            ctx.engine_state is None
+            or ctx.twin_state is None
+            or ctx.decision is None
         ):
-            raise RuntimeError("Simulation state is not initialized.")
+            self.ensure_simulation(uav_id=target_id)
+            ctx = self._get_or_create_context(target_id)
+        if (
+            ctx.engine_state is None
+            or ctx.twin_state is None
+            or ctx.decision is None
+        ):
+            raise RuntimeError(f"Simulation state is not initialized for {target_id}.")
 
         # Telemetry channels
         telemetry_dict = {
-            "rpm": round(float(self.current_engine_state.rpm), 1),
-            "throttle": round(float(self.current_engine_state.throttle), 1),
-            "altitude": round(float(self.current_engine_state.altitude), 1),
-            "ambient_temperature": round(float(self.current_engine_state.ambient_temperature), 1),
-            "humidity": round(float(self.current_engine_state.humidity), 1),
-            "wind_speed": round(float(self.current_engine_state.wind_speed), 1),
-            "cht": round(float(self.current_engine_state.cht), 2),
-            "egt": round(float(self.current_engine_state.egt), 2),
-            "oil_pressure": round(float(self.current_engine_state.oil_pressure), 2),
-            "oil_temperature": round(float(self.current_engine_state.oil_temperature), 2),
-            "vibration": round(float(self.current_engine_state.vibration), 3),
-            "fuel_flow": round(float(self.current_engine_state.fuel_flow), 2),
-            "engine_load": round(float(self.current_engine_state.engine_load), 1),
+            "rpm": round(float(ctx.engine_state.rpm), 1),
+            "throttle": round(float(ctx.engine_state.throttle), 1),
+            "altitude": round(float(ctx.engine_state.altitude), 1),
+            "ambient_temperature": round(float(ctx.engine_state.ambient_temperature), 1),
+            "humidity": round(float(ctx.engine_state.humidity), 1),
+            "wind_speed": round(float(ctx.engine_state.wind_speed), 1),
+            "cht": round(float(ctx.engine_state.cht), 2),
+            "egt": round(float(ctx.engine_state.egt), 2),
+            "oil_pressure": round(float(ctx.engine_state.oil_pressure), 2),
+            "oil_temperature": round(float(ctx.engine_state.oil_temperature), 2),
+            "vibration": round(float(ctx.engine_state.vibration), 3),
+            "fuel_flow": round(float(ctx.engine_state.fuel_flow), 2),
+            "engine_load": round(float(ctx.engine_state.engine_load), 1),
         }
 
         # Expected telemetry from Digital Twin
         expected_telemetry = {
             k: round(float(v), 2)
-            for k, v in self.current_twin_state.expected_telemetry.items()
+            for k, v in ctx.twin_state.expected_telemetry.items()
         }
 
         # Deviations from Digital Twin
         deviations = {
             k: (v.to_dict() if hasattr(v, "to_dict") else v)
-            for k, v in self.current_twin_state.deviations.items()
+            for k, v in ctx.twin_state.deviations.items()
         }
 
         # Digital Twin section
         digital_twin_dict = {
             "expected_telemetry": expected_telemetry,
             "deviations": deviations,
-            "engine_health": round(float(np.clip(self.current_twin_state.engine_health, 0.0, 100.0)), 1),
-            "engine_fitness_score": round(float(np.clip(self.current_twin_state.engine_fitness_score, 0.0, 100.0)), 1),
-            "overall_status": str(self.current_twin_state.overall_status),
+            "engine_health": round(float(np.clip(ctx.twin_state.engine_health, 0.0, 100.0)), 1),
+            "engine_fitness_score": round(float(np.clip(ctx.twin_state.engine_fitness_score, 0.0, 100.0)), 1),
+            "overall_status": str(ctx.twin_state.overall_status),
         }
 
         # AI section
         fault_probabilities = {
             cls_name: round(float(np.clip(prob, 0.0, 1.0)), 4)
-            for cls_name, prob in self.current_twin_state.fault_probabilities.items()
+            for cls_name, prob in ctx.twin_state.fault_probabilities.items()
         }
         ai_dict = {
-            "predicted_fault": str(self.current_twin_state.predicted_fault),
+            "predicted_fault": str(ctx.twin_state.predicted_fault),
             "fault_probabilities": fault_probabilities,
-            "anomaly_status": str(self.current_twin_state.anomaly_status),
-            "anomaly_score": round(float(np.clip(self.current_twin_state.anomaly_score, 0.0, 1.0)), 4),
-            "predicted_rul_hours": round(float(max(0.0, self.current_twin_state.predicted_rul_hours)), 1),
+            "anomaly_status": str(ctx.twin_state.anomaly_status),
+            "anomaly_score": round(float(np.clip(ctx.twin_state.anomaly_score, 0.0, 1.0)), 4),
+            "predicted_rul_hours": round(float(max(0.0, ctx.twin_state.predicted_rul_hours)), 1),
         }
 
         # Mission section
         mission_dict = {
-            "mission_reliability_score": round(float(np.clip(self.current_decision.mission_reliability_score, 0.0, 100.0)), 1),
-            "mission_risk": str(self.current_decision.mission_risk),
-            "mission_recommendation": str(self.current_decision.mission_recommendation),
-            "reason_codes": [str(rc) for rc in self.current_decision.reason_codes],
+            "mission_reliability_score": round(float(np.clip(ctx.decision.mission_reliability_score, 0.0, 100.0)), 1),
+            "mission_risk": str(ctx.decision.mission_risk),
+            "mission_recommendation": str(ctx.decision.mission_recommendation),
+            "reason_codes": [str(rc) for rc in ctx.decision.reason_codes],
         }
+
+        # Unified UAV state
+        uav_state = ctx.uav_state or UAVState.from_states(
+            engine_state=ctx.engine_state,
+            twin_state=ctx.twin_state,
+            decision=ctx.decision,
+            uav_id=uav_id
+        )
+        ctx.uav_state = uav_state
 
         packet = {
             "type": "telemetry",
-            "timestamp": str(self.current_engine_state.timestamp),
-            "engine_id": str(self.current_engine_state.engine_id),
-            "mission_id": str(self.current_engine_state.mission_id),
-            "flight_phase": str(self.current_engine_state.flight_phase),
+            "uav_id": str(uav_id),
+            "timestamp": str(ctx.engine_state.timestamp),
+            "engine_id": str(ctx.engine_state.engine_id),
+            "mission_id": str(ctx.engine_state.mission_id),
+            "flight_phase": str(ctx.engine_state.flight_phase),
             "telemetry": telemetry_dict,
             "digital_twin": digital_twin_dict,
             "ai": ai_dict,
             "mission": mission_dict,
+            "uav_state": uav_state.to_dict(),
         }
 
         # Deep validation: ensure no NaN or Infinity exists anywhere

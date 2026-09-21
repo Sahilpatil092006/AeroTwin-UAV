@@ -15,6 +15,8 @@ import json
 import numpy as np
 import pandas as pd
 import joblib
+import warnings
+warnings.filterwarnings("ignore")
 
 from backend.app.digital_twin.baseline import PhysicsBaselineModel
 from backend.app.digital_twin.deviation import ParameterDeviation, DeviationAnalyzer
@@ -51,6 +53,7 @@ class DigitalTwinState:
 
     predicted_rul_hours: float
     overall_status: str
+    uav_id: str = "UAV-001"
 
     def to_dict(self) -> Dict[str, Any]:
         """Serializes DigitalTwinState to a standard JSON-compatible dictionary."""
@@ -252,5 +255,6 @@ class DigitalTwin:
             anomaly_status=anomaly_status,
             anomaly_score=round(anomaly_score, 4),
             predicted_rul_hours=round(predicted_rul_hours, 1),
-            overall_status=overall_status
+            overall_status=overall_status,
+            uav_id=str(raw.get("uav_id", getattr(telemetry, "uav_id", "UAV-001")))
         )

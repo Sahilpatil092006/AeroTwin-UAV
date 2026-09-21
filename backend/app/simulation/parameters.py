@@ -140,6 +140,9 @@ class EngineState:
     fault_type: str
     fault_severity: float
 
+    # UAV identifier
+    uav_id: str = "UAV-001"
+
     def to_dict(self) -> Dict[str, Any]:
         """Serializes state to standard dictionary."""
         return asdict(self)

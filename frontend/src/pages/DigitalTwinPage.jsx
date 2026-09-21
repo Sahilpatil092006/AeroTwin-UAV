@@ -8,6 +8,7 @@ import ComponentInfoPanel from '../engine3d/ComponentInfoPanel';
 import PartsListTable from '../engine3d/PartsListTable';
 import { STATUS_TYPES } from '../utils/status';
 import { useTelemetry } from '../hooks/useTelemetry';
+import { useFleet } from '../hooks/useFleet';
 import {
   Box,
   FileCode2,
@@ -22,54 +23,160 @@ import {
   Flame,
   Fuel,
   TrendingUp,
-  Percent
+  Percent,
+  Plane,
+  AlertTriangle,
+  CheckCircle2,
 } from 'lucide-react';
 
+// Expected nominal physics baselines for digital twin deviations
+const PARAM_BASELINES = {
+  rpm: 2400.0,
+  cht: 105.0,
+  egt: 800.0,
+  oil_pressure: 2.8,
+};
+
 export default function DigitalTwinPage() {
-  const { isConnected, packet, telemetry, digitalTwin } = useTelemetry();
+  const { activeUavId, activeUavState, setActiveUavId, fleetUavIds } = useFleet();
+  const {
+    isConnected: wsConnected,
+    telemetry: defaultTelemetry,
+    digitalTwin: defaultTwin,
+    ai: defaultAi,
+  } = useTelemetry();
+
   const [activeTab, setActiveTab] = useState('3D VIEW');
   const [selectedPartId, setSelectedPartId] = useState(null);
   const [selectedCylinder, setSelectedCylinder] = useState('CYLINDER 1');
 
+  // Single Source of Truth: Active UAV State
+  const isFleetLive = Boolean(activeUavState);
+  const isConnected = isFleetLive || wsConnected;
+
+  // 1. Synchronized Telemetry for Active UAV
+  const rawTel = activeUavState?.engine_telemetry || (activeUavId === 'UAV-001' ? defaultTelemetry : {}) || {};
+  const activeTelemetry = {
+    ...rawTel,
+    flight_phase: activeUavState?.flight_phase || rawTel.flight_phase || (activeUavId === 'UAV-001' ? defaultTelemetry?.flight_phase : 'CRUISE') || 'CRUISE',
+  };
+
+  const rpmNum = activeTelemetry.rpm !== undefined ? Number(activeTelemetry.rpm) : null;
+  const chtNum = activeTelemetry.cht !== undefined ? Number(activeTelemetry.cht) : null;
+  const egtNum = activeTelemetry.egt !== undefined ? Number(activeTelemetry.egt) : null;
+  const oilPNum = activeTelemetry.oil_pressure !== undefined ? Number(activeTelemetry.oil_pressure) : null;
+  const oilTNum = activeTelemetry.oil_temperature !== undefined ? Number(activeTelemetry.oil_temperature) : null;
+  const vibNum = activeTelemetry.vibration !== undefined ? Number(activeTelemetry.vibration) : null;
+  const fuelNum = activeTelemetry.fuel_flow !== undefined ? Number(activeTelemetry.fuel_flow) : null;
+  const loadNum = activeTelemetry.engine_load !== undefined ? Number(activeTelemetry.engine_load) : null;
+  const flightPhase = activeTelemetry.flight_phase || 'CRUISE';
+
+  const rpmVal = rpmNum !== null ? rpmNum.toFixed(1) : '--';
+  const chtVal = chtNum !== null ? chtNum.toFixed(1) : '--';
+  const egtVal = egtNum !== null ? egtNum.toFixed(1) : '--';
+  const oilPVal = oilPNum !== null ? oilPNum.toFixed(2) : '--';
+  const oilTVal = oilTNum !== null ? oilTNum.toFixed(1) : '--';
+  const vibVal = vibNum !== null ? vibNum.toFixed(2) : '--';
+  const fuelVal = fuelNum !== null ? fuelNum.toFixed(1) : '--';
+  const loadVal = loadNum !== null ? loadNum.toFixed(1) : '--';
+
+  // 2. Synchronized Health, RUL & Digital Twin Deviations
+  const activeHealth = activeUavState?.engine_health !== undefined
+    ? Number(activeUavState.engine_health)
+    : (activeUavId === 'UAV-001' && defaultTwin?.engine_health !== undefined ? Number(defaultTwin.engine_health) : 100);
+
+  const activeFitness = activeUavState?.fitness_score !== undefined
+    ? Number(activeUavState.fitness_score)
+    : (activeUavId === 'UAV-001' && defaultTwin?.engine_fitness_score !== undefined ? Number(defaultTwin.engine_fitness_score) : 100);
+
+  const rawRul = activeUavState?.predicted_rul ?? activeUavState?.predicted_rul_hours;
+  const activeRulHours = rawRul !== undefined && rawRul !== null
+    ? Number(rawRul)
+    : (activeUavId === 'UAV-001' && defaultAi?.predicted_rul_hours !== undefined ? Number(defaultAi.predicted_rul_hours) : 500);
+
+  // Dynamic deviations from active UAV sensor values
+  const rpmDelta = rpmNum !== null ? rpmNum - PARAM_BASELINES.rpm : 0;
+  const chtDelta = chtNum !== null ? chtNum - PARAM_BASELINES.cht : 0;
+  const egtDelta = egtNum !== null ? egtNum - PARAM_BASELINES.egt : 0;
+  const oilPDelta = oilPNum !== null ? oilPNum - PARAM_BASELINES.oil_pressure : 0;
+
+  const activeDeviations = {
+    rpm: {
+      absolute_deviation: rpmDelta,
+      status: Math.abs(rpmDelta) > 250 ? 'CRITICAL' : Math.abs(rpmDelta) > 100 ? 'WARNING' : 'NORMAL',
+    },
+    cht: {
+      absolute_deviation: chtDelta,
+      status: Math.abs(chtDelta) > 15 ? 'CRITICAL' : Math.abs(chtDelta) > 8 ? 'WARNING' : 'NORMAL',
+    },
+    egt: {
+      absolute_deviation: egtDelta,
+      status: Math.abs(egtDelta) > 60 ? 'CRITICAL' : Math.abs(egtDelta) > 30 ? 'WARNING' : 'NORMAL',
+    },
+    oil_pressure: {
+      absolute_deviation: oilPDelta,
+      status: Math.abs(oilPDelta) > 0.6 ? 'CRITICAL' : Math.abs(oilPDelta) > 0.3 ? 'WARNING' : 'NORMAL',
+    },
+  };
+
+  const activeOverallTwinStatus = activeHealth >= 80 ? 'OPTIMAL' : activeHealth >= 60 ? 'DEGRADED' : 'CRITICAL';
+
+  const activeDigitalTwin = {
+    engine_health: activeHealth,
+    engine_fitness_score: activeFitness,
+    predicted_rul_hours: activeRulHours,
+    overall_status: activeOverallTwinStatus,
+    expected_telemetry: PARAM_BASELINES,
+    deviations: activeDeviations,
+  };
+
+  // 3. Synchronized AI & Fault State
+  const activeFault = activeUavState?.predicted_fault || (activeUavId === 'UAV-001' ? defaultAi?.predicted_fault : 'NORMAL') || 'NORMAL';
+  const rawConf = activeUavState?.fault_confidence !== undefined
+    ? Number(activeUavState.fault_confidence)
+    : (activeUavId === 'UAV-001' && defaultAi?.confidence !== undefined ? Number(defaultAi.confidence) : 0.9);
+
+  const activeAi = {
+    predicted_fault: activeFault,
+    confidence: rawConf,
+    anomaly_status: (activeUavState?.anomaly_status || (activeUavId === 'UAV-001' ? defaultAi?.anomaly_status : 'NORMAL') || 'NORMAL').toUpperCase(),
+    anomaly_score: activeUavState?.anomaly_score !== undefined
+      ? Number(activeUavState.anomaly_score)
+      : (activeUavId === 'UAV-001' && defaultAi?.anomaly_score !== undefined ? Number(defaultAi.anomaly_score) : 0.05),
+    predicted_rul_hours: activeRulHours,
+    fault_probabilities: {
+      [activeFault]: rawConf,
+    },
+  };
+
+  const missionRisk = (activeUavState?.mission_risk || 'LOW').toUpperCase();
+
+  // Status badges
   const syncStatusClass = isConnected
     ? 'bg-emerald-950/70 text-emerald-400 border-emerald-800/80'
     : 'bg-slate-800 text-slate-400 border-slate-700';
 
-  const deviations = digitalTwin?.deviations || {};
-
-  const rpmDev =
-    isConnected && deviations.rpm?.absolute_deviation !== undefined
-      ? Math.abs(deviations.rpm.absolute_deviation).toFixed(1)
-      : '--';
-  const chtDev =
-    isConnected && deviations.cht?.absolute_deviation !== undefined
-      ? Math.abs(deviations.cht.absolute_deviation).toFixed(1)
-      : '--';
-  const oilDev =
-    isConnected && deviations.oil_pressure?.absolute_deviation !== undefined
-      ? Math.abs(deviations.oil_pressure.absolute_deviation).toFixed(2)
-      : '--';
-  const egtDev =
-    isConnected && deviations.egt?.absolute_deviation !== undefined
-      ? Math.abs(deviations.egt.absolute_deviation).toFixed(1)
-      : '--';
-
-  // Live telemetry channel extractions
-  const rpmVal = isConnected && telemetry?.rpm ? Number(telemetry.rpm).toFixed(1) : '--';
-  const chtVal = isConnected && telemetry?.cht ? Number(telemetry.cht).toFixed(1) : '--';
-  const egtVal = isConnected && telemetry?.egt ? Number(telemetry.egt).toFixed(1) : '--';
-  const oilPVal = isConnected && telemetry?.oil_pressure ? Number(telemetry.oil_pressure).toFixed(2) : '--';
-  const oilTVal = isConnected && telemetry?.oil_temperature ? Number(telemetry.oil_temperature).toFixed(1) : '--';
-  const vibVal = isConnected && telemetry?.vibration ? Number(telemetry.vibration).toFixed(2) : '--';
-  const fuelVal = isConnected && telemetry?.fuel_flow ? Number(telemetry.fuel_flow).toFixed(1) : '--';
-  const loadVal = isConnected && telemetry?.engine_load ? Number(telemetry.engine_load).toFixed(1) : '--';
+  let twinBadge = {
+    label: activeFault === 'NORMAL' ? 'NOMINAL PHYSICAL STATE' : `${activeFault.replace(/_/g, ' ')} DETECTED`,
+    badgeClass: activeFault === 'NORMAL'
+      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+      : missionRisk === 'HIGH' || activeHealth < 60
+        ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+        : 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+    dotClass: activeFault === 'NORMAL'
+      ? 'bg-emerald-400'
+      : missionRisk === 'HIGH' || activeHealth < 60
+        ? 'bg-rose-400 animate-pulse'
+        : 'bg-amber-400 animate-pulse',
+  };
 
   return (
     <div className="space-y-6 select-none font-mono">
+      {/* Top Page Header */}
       <PageHeader
-        systemTag="AEROTWIN // DIGITAL TWIN"
+        systemTag={`${activeUavId} // DIGITAL TWIN`}
         title="3D Aero Piston Engine Digital Twin"
-        description="Physics-informed virtual replica of the 4-cylinder turbocharged aero piston propulsion system. Synchronizes real-time telemetry against nominal thermodynamic baselines."
+        description={`Physics-informed virtual replica of the 4-cylinder turbocharged aero piston propulsion system for ${activeUavId}. Synchronizes real-time telemetry and 3D fault highlights.`}
         actions={
           <div className="flex flex-wrap items-center gap-3">
             {/* View Mode Switcher Tabs */}
@@ -145,17 +252,61 @@ export default function DigitalTwinPage() {
         }
       />
 
+      {/* Persistent Active UAV Context Header */}
+      <div className="bg-[#0e1422]/95 border border-slate-700/80 rounded-lg p-3.5 shadow-sm flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded bg-slate-800 border border-slate-700 flex items-center justify-center text-sky-400">
+            <Plane className="w-4 h-4" />
+          </div>
+          <div>
+            <div className="text-[10px] font-mono tracking-widest text-slate-400 font-bold uppercase">
+              3D DIGITAL TWIN
+            </div>
+            <div className="text-base md:text-lg font-bold font-mono tracking-tight text-white flex items-center gap-2">
+              <span>SHOWING DATA FOR:</span>
+              <span className="text-sky-400 font-black">
+                {activeUavId}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <span className="px-2.5 py-1 rounded bg-slate-800/80 text-slate-300 border border-slate-700 font-mono text-xs font-semibold">
+            PHASE: {flightPhase}
+          </span>
+          <span className={`px-2.5 py-1 rounded font-mono text-xs font-semibold border ${twinBadge.badgeClass}`}>
+            <span className={`inline-block w-1.5 h-1.5 rounded-full mr-1.5 ${twinBadge.dotClass}`} />
+            {twinBadge.label}
+          </span>
+          <div className="flex items-center gap-2 bg-slate-900 px-2.5 py-1 rounded border border-slate-700/80">
+            <span className="text-xs font-mono text-slate-400">SWITCH UAV:</span>
+            <select
+              value={activeUavId}
+              onChange={(e) => setActiveUavId(e.target.value)}
+              className="bg-transparent text-slate-100 font-mono text-xs font-bold focus:outline-none cursor-pointer"
+            >
+              {(fleetUavIds || ['UAV-001', 'UAV-002', 'UAV-003', 'UAV-004', 'UAV-005']).map((id) => (
+                <option key={id} value={id} className="bg-slate-900 text-slate-100">
+                  {id}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+
       {/* Main Grid: Left Live Telemetry Rail + Central Engine Visualization Viewport */}
       <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
-        {/* Left Rail: Live Telemetry Channels */}
+        {/* Left Rail: Live Telemetry Channels for Selected UAV */}
         <div className="xl:col-span-1 space-y-3">
           <div className="p-3.5 rounded-lg bg-slate-900/90 border border-slate-800 shadow-xl space-y-2.5">
             <div className="flex items-center justify-between border-b border-slate-800/80 pb-2 mb-2">
               <span className="text-[11px] font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
                 <Activity className="w-3.5 h-3.5 text-sky-400" />
-                LIVE TELEMETRY
+                {activeUavId} TELEMETRY
               </span>
-              <span className="text-[10px] text-emerald-400">10 Hz STREAM</span>
+              <span className="text-[10px] text-emerald-400">SYNCHRONIZED</span>
             </div>
 
             {/* RPM */}
@@ -258,18 +409,30 @@ export default function DigitalTwinPage() {
             <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[10px]">
               <div>
                 <span className="text-slate-500 block">HEALTH INDEX</span>
-                <span className="font-bold text-emerald-400">
-                  {digitalTwin?.engine_health !== undefined
-                    ? `${Number(digitalTwin.engine_health).toFixed(1)}%`
-                    : '--'}
+                <span className={`font-bold ${activeHealth < 60 ? 'text-rose-400' : activeHealth < 80 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                  {activeHealth.toFixed(1)}%
                 </span>
               </div>
               <div className="text-right">
                 <span className="text-slate-500 block">PREDICTED RUL</span>
                 <span className="font-bold text-sky-300">
-                  {digitalTwin?.predicted_rul_hours !== undefined
-                    ? `${Number(digitalTwin.predicted_rul_hours).toFixed(0)} hrs`
-                    : '--'}
+                  {activeRulHours.toFixed(0)} hrs
+                </span>
+              </div>
+            </div>
+
+            {/* Fault & Risk State */}
+            <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[10px]">
+              <div>
+                <span className="text-slate-500 block">PREDICTED FAULT</span>
+                <span className={`font-bold ${activeFault === 'NORMAL' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  {activeFault.replace(/_/g, ' ')}
+                </span>
+              </div>
+              <div className="text-right">
+                <span className="text-slate-500 block">MISSION RISK</span>
+                <span className={`font-bold ${missionRisk === 'HIGH' ? 'text-rose-400' : missionRisk === 'MEDIUM' ? 'text-amber-400' : 'text-emerald-400'}`}>
+                  {missionRisk}
                 </span>
               </div>
             </div>
@@ -280,8 +443,8 @@ export default function DigitalTwinPage() {
         <div className="xl:col-span-3">
           {activeTab === '3D VIEW' && (
             <SectionCard
-              title="Interactive 3D Virtual Engine Representation"
-              subtitle="Rotax 914/915 iS Turbocharged 4-Cylinder Boxer Aero Engine • Click parts to inspect"
+              title={`3D DIGITAL TWIN — SHOWING DATA FOR: ${activeUavId}`}
+              subtitle={`Rotax 914/915 iS Virtual Physical Engine • Unit: ${activeUavId} • Fault State: ${activeFault.replace(/_/g, ' ')}`}
             >
               <AeroPistonEngine3D
                 selectedPartId={selectedPartId}
@@ -289,8 +452,9 @@ export default function DigitalTwinPage() {
                 selectedCylinder={selectedCylinder}
                 onSelectCylinder={setSelectedCylinder}
                 onSwitchMode={setActiveTab}
-                telemetry={telemetry}
-                digitalTwin={digitalTwin}
+                telemetry={activeTelemetry}
+                digitalTwin={activeDigitalTwin}
+                ai={activeAi}
                 isConnected={isConnected}
                 height={540}
               />
@@ -299,8 +463,8 @@ export default function DigitalTwinPage() {
 
           {activeTab === '2D SCHEMATIC' && (
             <SectionCard
-              title="Orthographic 2D Technical Schematic Diagram"
-              subtitle="Vector blueprint representation of Boxer-4 aero piston engine • Click parts to inspect"
+              title={`2D TECHNICAL SCHEMATIC — SHOWING DATA FOR: ${activeUavId}`}
+              subtitle={`Vector blueprint representation of Boxer-4 aero piston engine for ${activeUavId}`}
             >
               <AeroPistonEngine2D
                 selectedPartId={selectedPartId}
@@ -308,8 +472,8 @@ export default function DigitalTwinPage() {
                 selectedCylinder={selectedCylinder}
                 onSelectCylinder={setSelectedCylinder}
                 onSwitchMode={setActiveTab}
-                telemetry={telemetry}
-                digitalTwin={digitalTwin}
+                telemetry={activeTelemetry}
+                digitalTwin={activeDigitalTwin}
                 isConnected={isConnected}
                 height={540}
               />
@@ -320,8 +484,8 @@ export default function DigitalTwinPage() {
             <PartsListTable
               selectedPartId={selectedPartId}
               onSelectPart={setSelectedPartId}
-              telemetry={telemetry}
-              digitalTwin={digitalTwin}
+              telemetry={activeTelemetry}
+              digitalTwin={activeDigitalTwin}
               isConnected={isConnected}
             />
           )}
@@ -330,64 +494,57 @@ export default function DigitalTwinPage() {
             <ComponentInfoPanel
               selectedPartId={selectedPartId}
               onSelectPart={setSelectedPartId}
-              telemetry={telemetry}
-              digitalTwin={digitalTwin}
+              telemetry={activeTelemetry}
+              digitalTwin={activeDigitalTwin}
               isConnected={isConnected}
             />
           )}
         </div>
       </div>
 
-
       {/* Parts List Table (visible below 3D & 2D views) */}
       {(activeTab === '3D VIEW' || activeTab === '2D SCHEMATIC') && (
         <PartsListTable
           selectedPartId={selectedPartId}
           onSelectPart={setSelectedPartId}
-          telemetry={telemetry}
-          digitalTwin={digitalTwin}
+          telemetry={activeTelemetry}
+          digitalTwin={activeDigitalTwin}
           isConnected={isConnected}
         />
       )}
 
-      {/* Subsystems & Physics Residuals */}
+      {/* Subsystems & Physics Residuals for Active UAV */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Subsystem State Matrix */}
         <SectionCard
-          title="Engine Subsystem State Tracking"
-          subtitle="Monitored structural and functional components"
+          title={`Engine Subsystem State Tracking (${activeUavId})`}
+          subtitle={`Monitored structural and functional components for ${activeUavId}`}
         >
           <div className="space-y-3 font-mono text-xs">
             {[
               {
                 name: 'Cylinders 1 & 2 (Left Bank)',
-                temp: isConnected && telemetry?.cht ? `${telemetry.cht} °C` : '-- °C',
+                temp: chtNum !== null ? `${chtNum.toFixed(1)} °C` : '-- °C',
                 status: isConnected ? 'SYNCHRONIZED' : 'STANDBY',
               },
               {
                 name: 'Cylinders 3 & 4 (Right Bank)',
-                temp:
-                  isConnected && telemetry?.cht
-                    ? `${(Number(telemetry.cht) + 0.8).toFixed(1)} °C`
-                    : '-- °C',
+                temp: chtNum !== null ? `${(chtNum + 0.8).toFixed(1)} °C` : '-- °C',
                 status: isConnected ? 'SYNCHRONIZED' : 'STANDBY',
               },
               {
                 name: 'Turbocharger & Exhaust Manifold',
-                temp: isConnected && telemetry?.egt ? `${telemetry.egt} °C` : '-- °C',
+                temp: egtNum !== null ? `${egtNum.toFixed(1)} °C` : '-- °C',
                 status: isConnected ? 'SYNCHRONIZED' : 'STANDBY',
               },
               {
                 name: 'Dual Electronic Ignition (CDI)',
-                temp: isConnected && telemetry?.rpm ? `${telemetry.rpm} RPM` : '--',
+                temp: rpmNum !== null ? `${rpmNum.toFixed(0)} RPM` : '-- RPM',
                 status: isConnected ? 'SYNCHRONIZED' : 'STANDBY',
               },
               {
                 name: 'Lubrication & Scavenge Pump',
-                temp:
-                  isConnected && telemetry?.oil_pressure
-                    ? `${telemetry.oil_pressure} bar`
-                    : '-- bar',
+                temp: oilPNum !== null ? `${oilPNum.toFixed(2)} bar` : '-- bar',
                 status: isConnected ? 'SYNCHRONIZED' : 'STANDBY',
               },
             ].map((subsystem, idx) => (
@@ -415,20 +572,20 @@ export default function DigitalTwinPage() {
 
         {/* Physics-Telemetry Residual Analysis */}
         <SectionCard
-          title="Digital Twin Residuals (Observed vs Model)"
-          subtitle="Variance between physics baseline model and synthetic sensor stream"
+          title={`Digital Twin Residuals (${activeUavId})`}
+          subtitle={`Variance between baseline physical model and ${activeUavId} sensor stream`}
         >
           <div className="grid grid-cols-2 gap-3 mb-4">
             <MetricCard
               title="RPM Residual (ΔRPM)"
-              value={rpmDev}
+              value={rpmNum !== null ? Math.abs(rpmDelta).toFixed(1) : '--'}
               unit="RPM"
               status={
                 !isConnected
                   ? STATUS_TYPES.IDLE
-                  : deviations.rpm?.status === 'CRITICAL'
+                  : activeDeviations.rpm?.status === 'CRITICAL'
                   ? STATUS_TYPES.CRITICAL
-                  : deviations.rpm?.status === 'WARNING'
+                  : activeDeviations.rpm?.status === 'WARNING'
                   ? STATUS_TYPES.WARNING
                   : STATUS_TYPES.HEALTHY
               }
@@ -436,14 +593,14 @@ export default function DigitalTwinPage() {
             />
             <MetricCard
               title="Thermal Residual (ΔCHT)"
-              value={chtDev}
+              value={chtNum !== null ? Math.abs(chtDelta).toFixed(1) : '--'}
               unit="°C"
               status={
                 !isConnected
                   ? STATUS_TYPES.IDLE
-                  : deviations.cht?.status === 'CRITICAL'
+                  : activeDeviations.cht?.status === 'CRITICAL'
                   ? STATUS_TYPES.CRITICAL
-                  : deviations.cht?.status === 'WARNING'
+                  : activeDeviations.cht?.status === 'WARNING'
                   ? STATUS_TYPES.WARNING
                   : STATUS_TYPES.HEALTHY
               }
@@ -451,14 +608,14 @@ export default function DigitalTwinPage() {
             />
             <MetricCard
               title="Lubrication Residual (ΔOIL_P)"
-              value={oilDev}
+              value={oilPNum !== null ? Math.abs(oilPDelta).toFixed(2) : '--'}
               unit="bar"
               status={
                 !isConnected
                   ? STATUS_TYPES.IDLE
-                  : deviations.oil_pressure?.status === 'CRITICAL'
+                  : activeDeviations.oil_pressure?.status === 'CRITICAL'
                   ? STATUS_TYPES.CRITICAL
-                  : deviations.oil_pressure?.status === 'WARNING'
+                  : activeDeviations.oil_pressure?.status === 'WARNING'
                   ? STATUS_TYPES.WARNING
                   : STATUS_TYPES.HEALTHY
               }
@@ -466,14 +623,14 @@ export default function DigitalTwinPage() {
             />
             <MetricCard
               title="Exhaust Residual (ΔEGT)"
-              value={egtDev}
+              value={egtNum !== null ? Math.abs(egtDelta).toFixed(1) : '--'}
               unit="°C"
               status={
                 !isConnected
                   ? STATUS_TYPES.IDLE
-                  : deviations.egt?.status === 'CRITICAL'
+                  : activeDeviations.egt?.status === 'CRITICAL'
                   ? STATUS_TYPES.CRITICAL
-                  : deviations.egt?.status === 'WARNING'
+                  : activeDeviations.egt?.status === 'WARNING'
                   ? STATUS_TYPES.WARNING
                   : STATUS_TYPES.HEALTHY
               }
@@ -482,12 +639,8 @@ export default function DigitalTwinPage() {
           </div>
 
           <div className="p-3 rounded bg-slate-950/40 border border-dashed border-slate-800 text-center text-xs font-mono text-slate-400">
-            {isConnected && digitalTwin
-              ? `Digital Twin active for ${
-                  packet?.engine_id || 'ENGINE-001'
-                } // Health: ${digitalTwin.engine_health}% // Fitness: ${
-                  digitalTwin.engine_fitness_score
-                }% // Status: ${digitalTwin.overall_status}`
+            {isConnected
+              ? `Digital Twin active for ${activeUavId} // Health: ${activeHealth.toFixed(1)}% // Fitness: ${activeFitness.toFixed(1)}% // Status: ${activeOverallTwinStatus}`
               : 'Awaiting active digital twin state synchronization link.'}
           </div>
         </SectionCard>

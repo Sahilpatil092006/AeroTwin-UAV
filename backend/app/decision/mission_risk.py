@@ -79,6 +79,7 @@ class MissionDecision:
 
     reason_codes: List[str]
     explanation: str
+    uav_id: str = "UAV-001"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -312,5 +313,6 @@ class MissionDecisionEngine:
             rul_adequacy=rul_adequacy,
             environmental_stress=env_stress,
             reason_codes=reason_codes,
-            explanation=explanation
+            explanation=explanation,
+            uav_id=getattr(twin_state, "uav_id", "UAV-001")
         )

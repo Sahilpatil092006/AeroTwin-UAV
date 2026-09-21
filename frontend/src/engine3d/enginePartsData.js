@@ -542,42 +542,197 @@ export const ENGINE_PARTS = [
 ];
 
 /**
- * Computes component operational status given live telemetry & digital twin state
+ * Fault mapping definitions for virtual engine AI fault classes
+ * Each AI fault maps exclusively to its responsible primary component.
+ */
+export const FAULT_TARGET_PARTS = {
+  INJECTOR_ABNORMALITY: {
+    target: 'fuel_injector',
+    label: 'Injector Abnormality',
+    explanation: 'AI detected fuel delivery imbalance or injection timing anomaly on fuel injectors.',
+  },
+  COOLING_PROBLEM: {
+    target: 'cylinder_head',
+    label: 'Cooling System Degradation',
+    explanation: 'AI identified thermal dissipation deficit; elevated Cylinder Head Temperature (CHT) exceeds thermodynamic baseline.',
+  },
+  LUBRICATION_PROBLEM: {
+    target: 'oil_sump',
+    label: 'Lubrication System Fault',
+    explanation: 'AI detected oil pressure degradation or lubrication circuit breakdown, risking hydrodynamic film collapse.',
+  },
+  MISFIRE: {
+    target: 'spark_plug',
+    label: 'Cylinder Misfire',
+    explanation: 'AI detected combustion ignition failure or intermittent spark firing causing rotational speed and vibration anomalies.',
+  },
+  SENSOR_ANOMALY: {
+    target: null, // dynamically resolved via deviating telemetry key
+    label: 'Sensor Drift / Anomaly',
+    explanation: 'Telemetry channel exhibits statistical anomaly and residual deviation from physics digital twin model.',
+  },
+};
+
+/**
+ * Resolves the single component ID mapped to the active AI fault or anomaly.
+ * Returns null if the engine is operating normally.
+ */
+export function getActiveFaultedPartId(ai = {}, digitalTwin = {}) {
+  const faultClass =
+    (ai?.fault_detected && ai?.fault_class && ai.fault_class !== 'NORMAL')
+      ? ai.fault_class
+      : (ai?.predicted_fault && ai.predicted_fault !== 'NORMAL')
+      ? ai.predicted_fault
+      : null;
+
+  if (faultClass && FAULT_TARGET_PARTS[faultClass]) {
+    if (faultClass === 'SENSOR_ANOMALY') {
+      const deviations = digitalTwin?.deviations || {};
+      for (const [key, dev] of Object.entries(deviations)) {
+        if (dev?.status === 'CRITICAL' || dev?.status === 'WARNING') {
+          if (key === 'cht') return 'cylinder_head';
+          if (key === 'egt') return 'exhaust_manifold';
+          if (key === 'oil_pressure' || key === 'oil_temperature') return 'oil_sump';
+          if (key === 'vibration') return 'crankshaft';
+          if (key === 'fuel_flow') return 'fuel_injector';
+          if (key === 'rpm') return 'propeller';
+          if (key === 'manifold_pressure') return 'turbocharger';
+        }
+      }
+      return 'cylinder_head';
+    }
+    const target = FAULT_TARGET_PARTS[faultClass].target;
+    if (target) return target;
+  }
+
+  // Check if AI anomaly is flagged without a specific fault class
+  const isAnomalous = ai?.anomaly_status === 'ANOMALOUS' || ai?.anomaly_detected === true;
+  if (isAnomalous) {
+    const deviations = digitalTwin?.deviations || {};
+    for (const [key, dev] of Object.entries(deviations)) {
+      if (dev?.status === 'CRITICAL' || dev?.status === 'WARNING') {
+        if (key === 'cht') return 'cylinder_head';
+        if (key === 'egt') return 'exhaust_manifold';
+        if (key === 'oil_pressure' || key === 'oil_temperature') return 'oil_sump';
+        if (key === 'vibration') return 'crankshaft';
+        if (key === 'fuel_flow') return 'fuel_injector';
+        if (key === 'rpm') return 'propeller';
+        if (key === 'manifold_pressure') return 'turbocharger';
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Computes detailed component fault diagnostics given live telemetry, digital twin & AI state.
+ * Highlights ONLY the component mapped to the current AI fault.
+ * All other components remain NORMAL.
+ * @returns {{
+ *   status: 'NORMAL' | 'WARNING' | 'FAULT',
+ *   faultType: string,
+ *   faultLabel: string,
+ *   liveValue: string,
+ *   expectedValue: string,
+ *   deviation: string,
+ *   explanation: string,
+ *   isPulsing: boolean
+ * }}
+ */
+export function getComponentFaultDetails(part, telemetry = {}, digitalTwin = {}, ai = {}) {
+  if (!part) {
+    return {
+      status: 'NORMAL',
+      faultType: 'NORMAL',
+      faultLabel: 'Normal Operation',
+      telemetryLabel: 'TELEMETRY',
+      liveValue: '--',
+      expectedValue: '--',
+      deviation: '--',
+      explanation: 'Component functioning within nominal aero engine parameters.',
+      isPulsing: false,
+    };
+  }
+
+  const key = part.telemetryKey;
+  const val = (key && telemetry) ? telemetry[key] : undefined;
+  const deviations = digitalTwin?.deviations || {};
+  const dev = key ? deviations[key] : undefined;
+  const expectedVal = (key && digitalTwin?.expected_telemetry) ? digitalTwin.expected_telemetry[key] : undefined;
+  const unit = part.unit || '';
+  const partName = part.name || part.id || 'Component';
+  const telemetryLabel = part.telemetryLabel || (key ? String(key).toUpperCase() : 'TELEMETRY');
+
+  const liveValFormatted =
+    val !== undefined && val !== null && !isNaN(val)
+      ? `${Number(val).toFixed(unit === 'g' || unit === 'bar' ? 2 : 1)} ${unit}`.trim()
+      : '--';
+  const expectedValFormatted =
+    expectedVal !== undefined && expectedVal !== null && !isNaN(expectedVal)
+      ? `${Number(expectedVal).toFixed(unit === 'g' || unit === 'bar' ? 2 : 1)} ${unit}`.trim()
+      : (part.normalRange ? part.normalRange : '--');
+  const deviationFormatted =
+    dev?.absolute_deviation !== undefined && dev?.absolute_deviation !== null
+      ? `${dev.absolute_deviation > 0 ? '+' : ''}${Number(dev.absolute_deviation).toFixed(1)} ${unit}`.trim()
+      : '--';
+
+  const affectedPartId = getActiveFaultedPartId(ai, digitalTwin);
+
+  // If this component is the single affected component mapped to the AI fault
+  if (affectedPartId && part.id === affectedPartId) {
+    const faultClass =
+      (ai?.fault_detected && ai?.fault_class && ai.fault_class !== 'NORMAL')
+        ? ai.fault_class
+        : (ai?.predicted_fault && ai.predicted_fault !== 'NORMAL')
+        ? ai.predicted_fault
+        : null;
+
+    const isHardFault =
+      Boolean(faultClass) ||
+      ai?.fault_detected === true ||
+      digitalTwin?.overall_status === 'CRITICAL' ||
+      dev?.status === 'CRITICAL';
+
+    const faultDef = faultClass && FAULT_TARGET_PARTS[faultClass] ? FAULT_TARGET_PARTS[faultClass] : null;
+
+    return {
+      status: isHardFault ? 'FAULT' : 'WARNING',
+      faultType: faultClass || (isHardFault ? 'CRITICAL_FAULT' : 'ANOMALY'),
+      faultLabel: faultDef ? faultDef.label : (isHardFault ? `${partName} Fault` : `${partName} Anomaly`),
+      telemetryLabel,
+      liveValue: liveValFormatted,
+      expectedValue: expectedValFormatted,
+      deviation: deviationFormatted,
+      explanation:
+        faultDef?.explanation ||
+        `AI detected abnormal operational deviation on ${partName}.`,
+      isPulsing: isHardFault,
+    };
+  }
+
+  // All other components remain in normal state
+  return {
+    status: 'NORMAL',
+    faultType: 'NORMAL',
+    faultLabel: 'Normal Operation',
+    telemetryLabel,
+    liveValue: liveValFormatted,
+    expectedValue: expectedValFormatted,
+    deviation: deviationFormatted,
+    explanation: part.function || `${partName} functioning within nominal aero engine parameters.`,
+    isPulsing: false,
+  };
+}
+
+/**
+ * Computes component operational status given live telemetry, digital twin & AI state
  * @returns {'HEALTHY' | 'WARNING' | 'CRITICAL'}
  */
-export function getComponentStatus(part, telemetry = {}, digitalTwin = {}) {
-  if (!telemetry || Object.keys(telemetry).length === 0) {
-    return 'HEALTHY';
-  }
-
-  const val = telemetry[part.telemetryKey];
-  if (val === undefined || val === null || isNaN(val)) {
-    return 'HEALTHY';
-  }
-
-  // Check critical thresholds
-  if (part.warningMax && val >= part.warningMax) {
-    return 'CRITICAL';
-  }
-  if (part.nominalMin && val < part.nominalMin * 0.85) {
-    return 'CRITICAL';
-  }
-
-  // Check warning thresholds
-  if (part.nominalMax && val > part.nominalMax) {
-    return 'WARNING';
-  }
-  if (part.nominalMin && val < part.nominalMin) {
-    return 'WARNING';
-  }
-
-  // Check general digital twin deviations if available
-  const deviations = digitalTwin?.deviations || {};
-  if (deviations[part.telemetryKey]) {
-    const devStatus = deviations[part.telemetryKey].status;
-    if (devStatus === 'CRITICAL') return 'CRITICAL';
-    if (devStatus === 'WARNING') return 'WARNING';
-  }
-
+export function getComponentStatus(part, telemetry = {}, digitalTwin = {}, ai = {}) {
+  if (!part) return 'HEALTHY';
+  const details = getComponentFaultDetails(part, telemetry, digitalTwin, ai);
+  if (details?.status === 'FAULT') return 'CRITICAL';
+  if (details?.status === 'WARNING') return 'WARNING';
   return 'HEALTHY';
 }

@@ -11,10 +11,10 @@ export default function HealthIndicator({
   const displayValue = value !== null && value !== undefined ? `${value}%` : '--';
 
   return (
-    <div className="flex flex-col gap-1.5 p-3 rounded bg-slate-900/60 border border-slate-800">
+    <div className="flex flex-col gap-2 p-3.5 rounded-lg bg-[#0e1422]/90 border border-slate-800/80 shadow-sm">
       <div className="flex items-center justify-between text-xs text-slate-400 font-mono tracking-wider">
-        <span>{label.toUpperCase()}</span>
-        <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${statusCfg.badgeClass}`}>
+        <span className="font-semibold text-[11px]">{(label || '').toUpperCase()}</span>
+        <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold border ${statusCfg.badgeClass}`}>
           {statusCfg.label}
         </span>
       </div>
@@ -23,13 +23,13 @@ export default function HealthIndicator({
           {displayValue}
         </span>
       </div>
-      <div className="w-full bg-slate-800/80 h-1.5 rounded-full overflow-hidden">
+      <div className="w-full bg-slate-800/90 h-1.5 rounded-full overflow-hidden">
         <div
           className={`h-full transition-all duration-300 ${statusCfg.dotColor}`}
           style={{ width: typeof value === 'number' ? `${Math.min(100, Math.max(0, value))}%` : '0%' }}
         />
       </div>
-      <p className="text-[11px] text-slate-500 font-mono">{subtext}</p>
+      <p className="text-[10px] text-slate-400 font-mono">{subtext}</p>
     </div>
   );
 }

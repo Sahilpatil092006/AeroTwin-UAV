@@ -50,6 +50,10 @@ export const simulationApi = {
     const res = await api.post('/api/simulation/start', params);
     return res.data;
   },
+  injectFault: async (params) => {
+    const res = await api.post('/api/simulation/fault', params);
+    return res.data;
+  },
   getCurrent: async () => {
     const res = await api.get('/api/simulation/current');
     return res.data;
@@ -106,4 +110,40 @@ export const missionApi = {
   },
 };
 
+/**
+ * Multi-UAV & Fleet API Service
+ */
+export const fleetApi = {
+  getAllUavStates: async () => {
+    try {
+      const res = await api.get('/api/uav/all');
+      return res.data;
+    } catch (err) {
+      if (typeof fetch !== 'undefined') {
+        const fallbackUrl = `${API_BASE_URL || 'http://localhost:8000'}/api/uav/all`;
+        try {
+          const fallbackRes = await fetch(fallbackUrl, {
+            headers: { Accept: 'application/json' },
+          });
+          if (fallbackRes.ok) {
+            return await fallbackRes.json();
+          }
+        } catch (fetchErr) {
+          console.warn('[fleetApi] Fallback fetch also failed:', fetchErr.message);
+        }
+      }
+      throw err;
+    }
+  },
+  getUavState: async (uavId = 'UAV-001') => {
+    const res = await api.get(`/api/uav/${uavId}/state`);
+    return res.data;
+  },
+  listUavs: async () => {
+    const res = await api.get('/api/uav/list');
+    return res.data;
+  },
+};
+
 export default api;
+
