@@ -41,8 +41,8 @@ export default function App() {
             <TopBar onMenuClick={() => setIsSidebarOpen(true)} />
 
             {/* Dynamic Route Content */}
-            <main className="flex-1 overflow-y-auto px-4 py-6 md:px-8 lg:px-10">
-              <div className="max-w-7xl mx-auto pb-10">
+            <main className="flex-1 overflow-y-auto scroll-smooth px-4 py-3 md:px-6 lg:px-8">
+              <div className="max-w-7xl mx-auto pb-4">
                 <Routes>
                   <Route path="/" element={<Navigate to="/dashboard" replace />} />
                   <Route path="/dashboard" element={<DashboardPage />} />
@@ -54,8 +54,10 @@ export default function App() {
                   <Route path="/ai-analysis" element={<AiAnalysisPage />} />
                   <Route path="/what-if" element={<WhatIfPage />} />
                   <Route path="/mission" element={<MissionPage />} />
+                  <Route path="/mission-risk" element={<MissionPage />} />
                   <Route path="/maintenance" element={<MaintenancePage />} />
                   <Route path="/reports" element={<ReportsPage />} />
+                  <Route path="/telemetry-reports" element={<ReportsPage />} />
                   <Route path="*" element={<Navigate to="/dashboard" replace />} />
                 </Routes>
               </div>

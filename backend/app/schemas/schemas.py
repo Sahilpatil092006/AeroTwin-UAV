@@ -238,3 +238,41 @@ class MissionRiskResponse(BaseModel):
     environmental_stress: float
     reason_codes: List[str]
     explanation: str
+
+
+# =============================================================================
+# What-If Scenario Schemas (WIF-01)
+# =============================================================================
+class WhatIfRequest(BaseModel):
+    """Parameters for evaluating a What-If predictive flight projection."""
+    altitude: float = Field(default=18000.0, ge=0.0, le=50000.0, description="Altitude in feet")
+    ambientDelta: float = Field(default=15.0, ge=-50.0, le=60.0, description="Ambient temperature delta in °C")
+    throttle: float = Field(default=85.0, ge=0.0, le=100.0, description="Throttle position %")
+    injectorDrift: float = Field(default=0.0, ge=0.0, le=100.0, description="Induced injector lean drift %")
+    uav_id: Optional[str] = Field(default="UAV-001", description="Target UAV identifier")
+    flight_phase: Optional[str] = Field(default="CRUISE", description="Operating flight phase")
+    mission_duration_hours: Optional[float] = Field(default=2.0, gt=0.0, le=48.0, description="Mission duration in hours")
+
+
+class WhatIfResponse(BaseModel):
+    """Calculated What-If scenario outcome from physics simulator, Digital Twin, and AI."""
+    is_what_if: bool = True
+    status_tag: str = "WHAT-IF / SIMULATED RESULT"
+    uav_id: str = "UAV-001"
+    scenario_inputs: Dict[str, Any]
+    peakCht: float
+    peakEgt: float
+    survivalProb: float
+    thermalMargin: float
+    riskLevel: str
+    engine_health: float
+    engine_fitness_score: float
+    predicted_fault: str
+    predicted_rul_hours: float
+    anomaly_status: str
+    anomaly_score: float
+    mission_recommendation: str
+    reason_codes: List[str]
+    explanation: str
+    timestamp: str
+

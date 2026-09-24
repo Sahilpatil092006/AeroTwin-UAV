@@ -108,6 +108,59 @@ export const missionApi = {
     const res = await api.get('/api/mission/risk', { params });
     return res.data;
   },
+  evaluateWhatIf: async (scenarioData = {}) => {
+    try {
+      const res = await api.post('/api/mission/what-if', scenarioData);
+      return res.data;
+    } catch (err) {
+      if (typeof fetch !== 'undefined') {
+        const fallbackUrl = `${API_BASE_URL || 'http://localhost:8000'}/api/mission/what-if`;
+        try {
+          const fallbackRes = await fetch(fallbackUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+            },
+            body: JSON.stringify(scenarioData),
+          });
+          if (fallbackRes.ok) {
+            return await fallbackRes.json();
+          }
+        } catch (fetchErr) {
+          console.warn('[missionApi.evaluateWhatIf] Fallback fetch failed:', fetchErr.message);
+        }
+      }
+      throw err;
+    }
+  },
+};
+
+/**
+ * Emergency Return-to-Base (RTB) API Service
+ */
+export const rtbApi = {
+  getStatus: async (uavId = 'UAV-001') => {
+    const cleanId = (uavId || 'UAV-001').trim().toUpperCase();
+    try {
+      const res = await api.get('/api/rtb/status', { params: { uav_id: cleanId } });
+      return res.data;
+    } catch (err) {
+      if (typeof fetch !== 'undefined') {
+        try {
+          const fallbackRes = await fetch(`/api/rtb/status?uav_id=${encodeURIComponent(cleanId)}`, {
+            headers: { Accept: 'application/json' },
+          });
+          if (fallbackRes.ok) {
+            return await fallbackRes.json();
+          }
+        } catch (fetchErr) {
+          console.debug('[rtbApi] Proxy fetch fallback failed:', fetchErr.message);
+        }
+      }
+      throw err;
+    }
+  },
 };
 
 /**
@@ -145,5 +198,54 @@ export const fleetApi = {
   },
 };
 
+/**
+ * Reports & Flight History API Service
+ */
+export const reportsApi = {
+  getHistory: async (uavId = 'UAV-001', limit = 100) => {
+    try {
+      const res = await api.get(`/api/reports/${uavId}/history?limit=${limit}`);
+      return res.data;
+    } catch (err) {
+      if (typeof fetch !== 'undefined') {
+        const fallbackUrl = `${API_BASE_URL || 'http://localhost:8000'}/api/reports/${uavId}/history?limit=${limit}`;
+        try {
+          const fallbackRes = await fetch(fallbackUrl, {
+            headers: { Accept: 'application/json' },
+          });
+          if (fallbackRes.ok) {
+            return await fallbackRes.json();
+          }
+        } catch (fetchErr) {
+          console.debug('[reportsApi] Fallback fetch failed:', fetchErr.message);
+        }
+      }
+      throw err;
+    }
+  },
+  getSummary: async (uavId = 'UAV-001') => {
+    try {
+      const res = await api.get(`/api/reports/${uavId}/summary`);
+      return res.data;
+    } catch (err) {
+      if (typeof fetch !== 'undefined') {
+        const fallbackUrl = `${API_BASE_URL || 'http://localhost:8000'}/api/reports/${uavId}/summary`;
+        try {
+          const fallbackRes = await fetch(fallbackUrl, {
+            headers: { Accept: 'application/json' },
+          });
+          if (fallbackRes.ok) {
+            return await fallbackRes.json();
+          }
+        } catch (fetchErr) {
+          console.debug('[reportsApi] Fallback fetch failed:', fetchErr.message);
+        }
+      }
+      throw err;
+    }
+  },
+};
+
 export default api;
+
 

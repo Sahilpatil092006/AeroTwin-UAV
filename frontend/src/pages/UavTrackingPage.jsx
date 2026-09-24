@@ -1,7 +1,15 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import PageHeader from '../components/PageHeader';
 import SectionCard from '../components/SectionCard';
 import { useFleet } from '../hooks/useFleet';
+import {
+  deriveRtbFromUavState,
+  setUavRtbCompleted,
+  isUavRtbCompleted,
+  commandSimulatedRtb,
+  isSimulatedRtbActive,
+  clearSimulatedRtb,
+} from '../hooks/useRtb';
 import {
   Navigation,
   Radio,
@@ -247,6 +255,75 @@ const TRAIL_SAMPLE_EVERY = 4;
 const TRAIL_MAX_POINTS = 10;
 /** Waypoint arrival threshold in map-% */
 const WP_ARRIVAL_DIST = 1.6;
+/** Physical RTB transit speed in map-% per second (~0.42% / sec -> ~60-120s for 25-50% distance) */
+const RTB_SPEED_PER_SEC = 0.42;
+/** Sample interval for trail points in seconds */
+const TRAIL_SAMPLE_INTERVAL_SEC = 0.15;
+/** RTB transit speed in map-% per animation frame at ~60 fps (RTB-04)
+ * Intentionally slow: ~0.007 map-%/frame = ~0.42%/sec -> ~60-120s for 25-50% distance */
+const RTB_SPEED = 0.007;
+/** Home Base arrival distance threshold in map-% */
+const RTB_ARRIVAL_DIST = 0.6;
+
+/**
+ * Deterministic orbital visual offsets around Home Base (radius ~3.5-4.2% map).
+ * Keeps Home Base runway text & diamond anchor completely un-obscured
+ * and ensures all parked/arrived UAVs have distinct, non-overlapping clickable markers.
+ * Does NOT alter underlying simulation coordinates.
+ */
+const HOME_BASE_ORBIT_OFFSETS = {
+  'UAV-001': { dx: -3.6, dy: -3.2 }, // Top-Left
+  'UAV-002': { dx: 3.6, dy: -3.2 },  // Top-Right
+  'UAV-003': { dx: 4.2, dy: 2.2 },   // Bottom-Right
+  'UAV-004': { dx: -4.2, dy: 2.2 },  // Bottom-Left
+  'UAV-005': { dx: 0.0, dy: -4.4 },  // Top-Center
+};
+
+/**
+ * Staggered parameter t along route vector (distance fraction from UAV to Home Base).
+ * Prevents multiple RTB route labels from piling up at the exact same midpoint.
+ */
+const RTB_STAGGER_T = {
+  'UAV-001': 0.36,
+  'UAV-002': 0.58,
+  'UAV-003': 0.44,
+  'UAV-004': 0.64,
+  'UAV-005': 0.50,
+};
+
+/**
+ * Computes optimal directional slot for a UAV's callsign pill
+ * to prevent overlapping with nearby UAVs and Home Base.
+ * Returns 'top' | 'bottom' | 'left' | 'right'
+ */
+function getLabelSlot(uavId, pos, allPositions) {
+  if (!pos) return 'bottom';
+  const distToHome = Math.hypot(HOME_BASE_CENTER.x - pos.x, HOME_BASE_CENTER.y - pos.y);
+  if (distToHome <= 7.0) {
+    // Near Home Base: radiate label away from Home Base center (50, 50)
+    const dy = pos.y - HOME_BASE_CENTER.y;
+    const dx = pos.x - HOME_BASE_CENTER.x;
+    if (dy < -0.8) return 'top';
+    if (dy > 0.8) return 'bottom';
+    if (dx < 0) return 'left';
+    return 'right';
+  }
+
+  // Check proximity against other UAVs
+  if (allPositions) {
+    for (const [otherId, otherPos] of Object.entries(allPositions)) {
+      if (otherId === uavId || !otherPos) continue;
+      const d = Math.hypot(otherPos.x - pos.x, otherPos.y - pos.y);
+      if (d < 5.5) {
+        // If neighbor is below, position label on top
+        if (otherPos.y >= pos.y) return 'top';
+        return 'bottom';
+      }
+    }
+  }
+
+  return 'bottom';
+}
 
 /**
  * Determine UAV status category:
@@ -314,8 +391,51 @@ export default function UavTrackingPage() {
   const { activeUavId, setActiveUavId, fleetData, uavCache, fleetUavIds } = useFleet();
   const [selectedPopupUavId, setSelectedPopupUavId] = useState(activeUavId || 'UAV-001');
   const [selectedAreaId, setSelectedAreaId] = useState('KONKAN_COAST');
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [simulatedNoticeUav, setSimulatedNoticeUav] = useState(null);
+  const [, setForceRtbRerender] = useState(0);
+
+  const handleConfirmSimulatedRtb = () => {
+    commandSimulatedRtb(activeUavId);
+    setShowConfirmModal(false);
+    setSimulatedNoticeUav(activeUavId);
+    setForceRtbRerender((c) => c + 1);
+  };
+
+  const handleResetUavMission = (uavId) => {
+    clearUavRtbCompleted(uavId);
+    clearSimulatedRtb(uavId);
+    if (simulatedNoticeUav === uavId) {
+      setSimulatedNoticeUav(null);
+    }
+    if (animStateRef.current?.[uavId]) {
+      const uavState = animStateRef.current[uavId];
+      const route = UAV_PATROL_ROUTES[uavId] || UAV_PATROL_ROUTES['UAV-001'];
+      const wp = route.waypoints[0];
+      uavState.x = wp.x;
+      uavState.y = wp.y;
+      uavState.heading = route.initialHeading;
+      uavState.waypointIdx = 0;
+      uavState.trail = [];
+      uavState.wasRtb = false;
+      uavState.rtbCompleted = false;
+    }
+    setForceRtbRerender((c) => c + 1);
+  };
 
   // ── Simulated UAV movement animation ──────────────────────────────────────
+  // Mutable ref holding active RTB flags for each UAV so the RAF loop has synchronous zero-latency access (RTB-04)
+  const rtbActiveMapRef = useRef({});
+
+  // Direct DOM element references for high-performance 60 FPS visual interpolation without React re-render churn
+  const markerDomRefs = useRef({});
+  const iconDomRefs = useRef({});
+  const rtbGlowDomRefs = useRef({});
+  const rtbVectorDomRefs = useRef({});
+  const rtbLabelDomRefs = useRef({});
+  const lastTimeRef = useRef(null);
+  const lastStateSyncRef = useRef(0);
+
   // animStateRef holds the MUTABLE animation state (not React state — avoids
   // stale-closure issues inside the RAF loop).
   const animStateRef = useRef(null);
@@ -329,18 +449,20 @@ export default function UavTrackingPage() {
         heading: route.initialHeading,
         waypointIdx: route.startIdx,
         trail: [],           // [{x, y}, ...]
-        trailCounter: 0,
+        trailTimer: 0,
+        wasRtb: false,
+        rtbCompleted: false,
       };
     }
     animStateRef.current = s;
   }
 
-  // animSnapshot is the React-state snapshot used for rendering.
+  // animSnapshot is the React-state snapshot used for rendering (synchronized at 10 Hz to prevent 60 Hz React thrashing).
   const [animSnapshot, setAnimSnapshot] = useState(() => {
     const snap = {};
     for (const [uavId, route] of Object.entries(UAV_PATROL_ROUTES)) {
       const wp = route.waypoints[route.startIdx];
-      snap[uavId] = { x: wp.x, y: wp.y, heading: route.initialHeading, trail: [] };
+      snap[uavId] = { x: wp.x, y: wp.y, heading: route.initialHeading, trail: [], rtbCompleted: false };
     }
     return snap;
   });
@@ -349,58 +471,230 @@ export default function UavTrackingPage() {
     let frameId;
 
     const tick = () => {
+      const now = performance.now();
+      if (!lastTimeRef.current) {
+        lastTimeRef.current = now;
+      }
+      // Clamped delta-time in seconds (bounded between 1ms and 50ms to prevent jumps on tab blur/resume)
+      const dt = Math.min(Math.max((now - lastTimeRef.current) / 1000, 0.001), 0.05);
+      lastTimeRef.current = now;
+
       const state = animStateRef.current;
-      const nextSnap = {};
+      if (!state) {
+        frameId = requestAnimationFrame(tick);
+        return;
+      }
 
       for (const [uavId, route] of Object.entries(UAV_PATROL_ROUTES)) {
         const uavState = state[uavId];
-        const target = route.waypoints[uavState.waypointIdx];
+        if (!uavState) continue;
+        const isCompleted = isUavRtbCompleted(uavId) || Boolean(uavState.rtbCompleted);
+        const isRtbActive = Boolean(rtbActiveMapRef.current?.[uavId]) && !isCompleted;
 
-        const dx = target.x - uavState.x;
-        const dy = target.y - uavState.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (isCompleted) {
+          // ── RTB COMPLETE (RTB-05): Stopped at Home Base, keep marker parked, do not patrol ──
+          uavState.x = HOME_BASE_CENTER.x;
+          uavState.y = HOME_BASE_CENTER.y;
+          uavState.rtbCompleted = true;
+          if (!isUavRtbCompleted(uavId)) {
+            setUavRtbCompleted(uavId, true);
+          }
+        } else if (isRtbActive) {
+          // ── RTB MOVEMENT (RTB-04 & SMOOTH FIX): Constant controlled speed towards Home Base ──
+          uavState.wasRtb = true;
+          const dx = HOME_BASE_CENTER.x - uavState.x;
+          const dy = HOME_BASE_CENTER.y - uavState.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
 
-        if (dist < WP_ARRIVAL_DIST) {
-          // Advance to the next waypoint in the circuit
-          uavState.waypointIdx = (uavState.waypointIdx + 1) % route.waypoints.length;
+          if (dist > RTB_ARRIVAL_DIST) {
+            // Move along the direct vector towards Home Base with elapsed-time physics
+            const stepDist = RTB_SPEED_PER_SEC * dt;
+            const moveDist = Math.min(stepDist, dist);
+            const nx = dx / dist;
+            const ny = dy / dist;
+            uavState.x += nx * moveDist;
+            uavState.y += ny * moveDist;
+            uavState.rtbCompleted = false;
+
+            // Smooth heading towards Home Base (0° = up/north on map)
+            const targetHeading = (Math.atan2(dx, -dy) * 180) / Math.PI;
+            const angleDiff = ((targetHeading - uavState.heading + 540) % 360) - 180;
+            uavState.heading += angleDiff * Math.min(1.0, 2.5 * dt);
+
+            // Sample trail at constant time intervals
+            uavState.trailTimer = (uavState.trailTimer || 0) + dt;
+            if (uavState.trailTimer >= TRAIL_SAMPLE_INTERVAL_SEC) {
+              uavState.trailTimer = 0;
+              uavState.trail = [
+                ...uavState.trail.slice(-(TRAIL_MAX_POINTS - 1)),
+                { x: uavState.x, y: uavState.y },
+              ];
+            }
+          } else {
+            // Reached Home Base (RTB-05): Clamp exactly, stop movement, do not oscillate
+            uavState.x = HOME_BASE_CENTER.x;
+            uavState.y = HOME_BASE_CENTER.y;
+            uavState.rtbCompleted = true;
+            setUavRtbCompleted(uavId, true);
+          }
         } else {
-          // Move toward the current target waypoint
-          const nx = dx / dist;
-          const ny = dy / dist;
-          uavState.x += nx * route.speed;
-          uavState.y += ny * route.speed;
+          // ── NORMAL PATROL MOVEMENT: waypoint circuit ──
+          uavState.rtbCompleted = false;
+          // Re-synchronize when transitioning from RTB back to normal patrol
+          if (uavState.wasRtb) {
+            let closestIdx = 0;
+            let minD = Infinity;
+            route.waypoints.forEach((wp, idx) => {
+              const d = Math.hypot(wp.x - uavState.x, wp.y - uavState.y);
+              if (d < minD) {
+                minD = d;
+                closestIdx = idx;
+              }
+            });
+            uavState.waypointIdx = closestIdx;
+            uavState.wasRtb = false;
+          }
 
-          // Smooth heading: target = angle from screen-up (0° = north on map)
-          // atan2(dx, -dy) gives clockwise angle from the upward screen axis
-          const targetHeading = (Math.atan2(dx, -dy) * 180) / Math.PI;
-          const angleDiff = ((targetHeading - uavState.heading + 540) % 360) - 180;
-          uavState.heading += angleDiff * 0.06; // interpolation factor
+          const target = route.waypoints[uavState.waypointIdx];
+          const dx = target.x - uavState.x;
+          const dy = target.y - uavState.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
 
-          // Sample trail at TRAIL_SAMPLE_EVERY interval
-          uavState.trailCounter++;
-          if (uavState.trailCounter >= TRAIL_SAMPLE_EVERY) {
-            uavState.trailCounter = 0;
-            uavState.trail = [
-              ...uavState.trail.slice(-(TRAIL_MAX_POINTS - 1)),
-              { x: uavState.x, y: uavState.y },
-            ];
+          if (dist < WP_ARRIVAL_DIST) {
+            // Advance to the next waypoint in the circuit
+            uavState.waypointIdx = (uavState.waypointIdx + 1) % route.waypoints.length;
+          } else {
+            // Move toward the current target waypoint with elapsed-time physics
+            const patrolSpeedPerSec = (route.speed || 0.045) * 60;
+            const stepDist = patrolSpeedPerSec * dt;
+            const moveDist = Math.min(stepDist, dist);
+            const nx = dx / dist;
+            const ny = dy / dist;
+            uavState.x += nx * moveDist;
+            uavState.y += ny * moveDist;
+
+            // Smooth heading: target = angle from screen-up (0° = north on map)
+            const targetHeading = (Math.atan2(dx, -dy) * 180) / Math.PI;
+            const angleDiff = ((targetHeading - uavState.heading + 540) % 360) - 180;
+            uavState.heading += angleDiff * Math.min(1.0, 3.5 * dt);
+
+            // Sample trail at constant time intervals
+            uavState.trailTimer = (uavState.trailTimer || 0) + dt;
+            if (uavState.trailTimer >= TRAIL_SAMPLE_INTERVAL_SEC) {
+              uavState.trailTimer = 0;
+              uavState.trail = [
+                ...uavState.trail.slice(-(TRAIL_MAX_POINTS - 1)),
+                { x: uavState.x, y: uavState.y },
+              ];
+            }
           }
         }
 
-        nextSnap[uavId] = {
-          x: uavState.x,
-          y: uavState.y,
-          heading: uavState.heading,
-          trail: uavState.trail,
-        };
+        // ── Direct 60 FPS DOM Visual Updates (prevents React 60Hz render thrashing) ──
+        // Compute visual position for DOM elements (preserves underlying uavState.x/y exactly)
+        const distToHome = Math.hypot(HOME_BASE_CENTER.x - uavState.x, HOME_BASE_CENTER.y - uavState.y);
+        let visualX = uavState.x;
+        let visualY = uavState.y;
+
+        // When near or arrived at Home Base, blend smoothly into non-overlapping orbital parking slot
+        if (uavState.rtbCompleted || distToHome <= 3.0) {
+          const orbit = HOME_BASE_ORBIT_OFFSETS[uavId] || { dx: 0, dy: 0 };
+          const blend = uavState.rtbCompleted ? 1 : Math.max(0, 1 - distToHome / 3.0);
+          visualX = uavState.x + orbit.dx * blend;
+          visualY = uavState.y + orbit.dy * blend;
+        }
+
+        const markerEl = markerDomRefs.current[uavId];
+        if (markerEl) {
+          markerEl.style.left = `${visualX}%`;
+          markerEl.style.top = `${visualY}%`;
+        }
+
+        const iconEl = iconDomRefs.current[uavId];
+        if (iconEl) {
+          iconEl.style.transform = `rotate(${uavState.heading}deg)`;
+        }
+
+        const glowEl = rtbGlowDomRefs.current[uavId];
+        if (glowEl) {
+          if (isCompleted || distToHome <= RTB_ARRIVAL_DIST) {
+            glowEl.style.opacity = '0';
+          } else {
+            glowEl.style.opacity = '1';
+            glowEl.setAttribute('x1', `${visualX}%`);
+            glowEl.setAttribute('y1', `${visualY}%`);
+          }
+        }
+
+        const vectorEl = rtbVectorDomRefs.current[uavId];
+        if (vectorEl) {
+          if (isCompleted || distToHome <= RTB_ARRIVAL_DIST) {
+            vectorEl.style.opacity = '0';
+          } else {
+            vectorEl.style.opacity = '1';
+            vectorEl.setAttribute('x1', `${visualX}%`);
+            vectorEl.setAttribute('y1', `${visualY}%`);
+          }
+        }
+
+        const labelEl = rtbLabelDomRefs.current[uavId];
+        if (labelEl) {
+          if (isCompleted || distToHome <= 5.0) {
+            labelEl.style.display = 'none';
+          } else {
+            labelEl.style.display = 'block';
+            const t = RTB_STAGGER_T[uavId] || 0.5;
+            let lx = visualX + (HOME_BASE_CENTER.x - visualX) * t;
+            let ly = visualY + (HOME_BASE_CENTER.y - visualY) * t;
+            const dHome = Math.hypot(HOME_BASE_CENTER.x - lx, HOME_BASE_CENTER.y - ly);
+            if (dHome < 7.0 && dHome > 0.001) {
+              const scale = 7.0 / dHome;
+              lx = HOME_BASE_CENTER.x - (HOME_BASE_CENTER.x - lx) * scale;
+              ly = HOME_BASE_CENTER.y - (HOME_BASE_CENTER.y - ly) * scale;
+            }
+            labelEl.style.left = `${lx}%`;
+            labelEl.style.top = `${ly}%`;
+          }
+        }
       }
 
-      setAnimSnapshot(nextSnap);
+      // ── Throttled React state synchronization (10 Hz / every 100ms) ──
+      // Keeps SVG trails, boundary detection, and React state in sync without 60Hz re-renders
+      if (now - lastStateSyncRef.current >= 100) {
+        lastStateSyncRef.current = now;
+        const nextSnap = {};
+        for (const [uavId, s] of Object.entries(state)) {
+          const dHome = Math.hypot(HOME_BASE_CENTER.x - s.x, HOME_BASE_CENTER.y - s.y);
+          let vX = s.x;
+          let vY = s.y;
+          if (s.rtbCompleted || dHome <= 3.0) {
+            const orbit = HOME_BASE_ORBIT_OFFSETS[uavId] || { dx: 0, dy: 0 };
+            const blend = s.rtbCompleted ? 1 : Math.max(0, 1 - dHome / 3.0);
+            vX = s.x + orbit.dx * blend;
+            vY = s.y + orbit.dy * blend;
+          }
+          nextSnap[uavId] = {
+            x: s.x,
+            y: s.y,
+            visualX: vX,
+            visualY: vY,
+            heading: s.heading,
+            trail: s.trail,
+            rtbCompleted: s.rtbCompleted,
+          };
+        }
+        setAnimSnapshot(nextSnap);
+      }
+
       frameId = requestAnimationFrame(tick);
     };
 
     frameId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frameId);
+    return () => {
+      if (frameId) {
+        cancelAnimationFrame(frameId);
+      }
+    };
   }, []); // empty deps — RAF loop only starts once
 
   // Active simulated operating area
@@ -422,68 +716,191 @@ export default function UavTrackingPage() {
   const activeUav = uavList.find((u) => u.uav_id === activeUavId) || uavList[0];
   const activeUavTheme = getStatusTheme(getStatusCategory(activeUav));
 
-  // Handler to select UAV and open popup
+  // Backend RTB decision state synchronization for all fleet UAV assets (RTB-03)
+  const [backendRtbMap, setBackendRtbMap] = useState({});
+
+  useEffect(() => {
+    let isMounted = true;
+    const fetchAllRtb = async () => {
+      try {
+        const uavIds = (fleetUavIds && fleetUavIds.length > 0)
+          ? fleetUavIds
+          : ['UAV-001', 'UAV-002', 'UAV-003', 'UAV-004', 'UAV-005'];
+        const results = await Promise.all(
+          uavIds.map(async (id) => {
+            try {
+              const res = await rtbApi.getStatus(id);
+              return [id, res];
+            } catch {
+              return [id, null];
+            }
+          })
+        );
+        if (isMounted) {
+          const map = {};
+          results.forEach(([id, res]) => {
+            if (res) map[id] = res;
+          });
+          setBackendRtbMap(map);
+        }
+      } catch (err) {
+        // Fallback to local synchronous derivation
+      }
+    };
+
+    fetchAllRtb();
+    const timer = setInterval(fetchAllRtb, 2000);
+    return () => {
+      isMounted = false;
+      clearInterval(timer);
+    };
+  }, [fleetUavIds]);
+
+  // Compute active RTB UAVs dynamically from existing RTB-01 decision states (RTB-03, MAP UI-03 & RTB-06)
+  const rtbActiveUavs = useMemo(() => {
+    return uavList
+      .map((uav) => {
+        const uavId = uav.uav_id;
+        const backendState = backendRtbMap[uavId];
+        const derivedState = deriveRtbFromUavState(uav);
+        const isManual = isSimulatedRtbActive(uavId);
+        const rtbState = isManual
+          ? { ...(backendState || {}), ...derivedState, rtb_active: true }
+          : (backendState || derivedState);
+        const isCompleted = isUavRtbCompleted(uavId) || Boolean(animSnapshot[uavId]?.rtbCompleted) || rtbState?.status === 'COMPLETE';
+        const isRtbActive = Boolean(rtbState?.rtb_active) && !isCompleted;
+
+        if (!isRtbActive || isCompleted) return null;
+
+        const animPos = animSnapshot[uavId];
+        const staticFallback = UAV_TACTICAL_POSITIONS[uavId] || { x: 50, y: 50, heading: 0 };
+        const pos = animPos ? { x: animPos.x, y: animPos.y } : staticFallback;
+        const visualPos = {
+          x: animPos?.visualX ?? pos.x,
+          y: animPos?.visualY ?? pos.y,
+        };
+        const distToHome = Math.hypot(HOME_BASE_CENTER.x - pos.x, HOME_BASE_CENTER.y - pos.y);
+        const isArrived = distToHome <= RTB_ARRIVAL_DIST || isCompleted;
+        if (isArrived) return null;
+
+        // Staggered label positioning along route vector
+        const t = RTB_STAGGER_T[uavId] || 0.5;
+        let lx = visualPos.x + (HOME_BASE_CENTER.x - visualPos.x) * t;
+        let ly = visualPos.y + (HOME_BASE_CENTER.y - visualPos.y) * t;
+        const dHome = Math.hypot(HOME_BASE_CENTER.x - lx, HOME_BASE_CENTER.y - ly);
+        if (dHome < 7.0 && dHome > 0.001) {
+          const scale = 7.0 / dHome;
+          lx = HOME_BASE_CENTER.x - (HOME_BASE_CENTER.x - lx) * scale;
+          ly = HOME_BASE_CENTER.y - (HOME_BASE_CENTER.y - ly) * scale;
+        }
+
+        return {
+          uavId,
+          uav,
+          pos,
+          visualPos,
+          labelPos: { x: lx, y: ly },
+          rtbState,
+          isSelected: uavId === activeUavId,
+          isArrived,
+          isManual,
+        };
+      })
+      .filter(Boolean);
+  }, [uavList, animSnapshot, activeUavId, backendRtbMap]);
+
+  // Synchronize mutable rtbActiveMapRef on each render so RAF loop has zero-latency RTB state (RTB-04 & RTB-06)
+  const rtbActiveSync = {};
+  for (const u of uavList) {
+    const uavId = u.uav_id;
+    const backendState = backendRtbMap[uavId];
+    const derived = deriveRtbFromUavState(u);
+    const isManual = isSimulatedRtbActive(uavId);
+    const isCompleted = isUavRtbCompleted(uavId) || Boolean(animSnapshot[uavId]?.rtbCompleted);
+    const rtbState = isManual
+      ? { ...(backendState || {}), ...derived, rtb_active: true }
+      : (backendState || derived);
+    rtbActiveSync[uavId] = Boolean(rtbState?.rtb_active) && !isCompleted;
+  }
+  rtbActiveMapRef.current = rtbActiveSync;
+
+  // Derive active UAV RTB states for Banner and Command Button (RTB-06)
+  const activeBackendRtb = backendRtbMap[activeUavId];
+  const activeDerivedRtb = deriveRtbFromUavState(activeUav);
+  const isActiveUavManual = isSimulatedRtbActive(activeUavId);
+  const activeRtbState = isActiveUavManual
+    ? { ...(activeBackendRtb || {}), ...activeDerivedRtb, rtb_active: true }
+    : (activeBackendRtb || activeDerivedRtb);
+  const isActiveUavCompleted = Boolean(
+    isUavRtbCompleted(activeUavId) ||
+    animSnapshot[activeUavId]?.rtbCompleted ||
+    activeRtbState?.status === 'COMPLETE'
+  );
+  const isActiveUavRtbActive = Boolean(activeRtbState?.rtb_active) && !isActiveUavCompleted;
+
+  // Handler to select UAV and toggle/open popup
   const handleMarkerClick = (uavId) => {
     setActiveUavId(uavId);
-    setSelectedPopupUavId(uavId);
+    setSelectedPopupUavId((prev) => (prev === uavId ? null : uavId));
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-2">
       {/* 1. Page Header with required titles & badges */}
       <PageHeader
         systemTag="AEROTWIN // TACTICAL AIRSPACE"
         title="UAV Tracking"
-        description="Airspace tactical situational awareness display presenting simulated operational positions, mission risks, and live engine status for all deployed fleet assets across selectable simulated operating areas."
+        description="Airspace tactical situational awareness display presenting simulated operational positions, mission risks, and live engine status across selectable simulated operating areas."
+        className="pb-1 mb-1.5"
         actions={
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="px-2.5 py-1 rounded text-xs font-mono font-bold bg-sky-500/10 text-sky-400 border border-sky-500/30 flex items-center gap-1.5 shadow-sm">
-              <span className="w-2 h-2 rounded-full bg-sky-400 animate-pulse" />
+            <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-sky-500/10 text-sky-400 border border-sky-500/30 flex items-center gap-1.5 shadow-sm">
+              <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
               UAV LIVE TRACKING
             </span>
-            <span className="px-2.5 py-1 rounded text-xs font-mono font-bold bg-slate-800/90 text-slate-300 border border-slate-700 shadow-sm">
+            <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-slate-800/90 text-slate-300 border border-slate-700 shadow-sm">
               SIMULATED TELEMETRY
             </span>
           </div>
         }
       />
 
-      {/* 2. SIMULATED OPERATING AREA SELECTOR (STEP 19B.2) */}
-      <div className="p-3.5 rounded-lg bg-[#0e1422]/95 border border-slate-700/80 shadow-sm space-y-3">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 pb-3 border-b border-slate-800/80">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded bg-slate-800 border border-slate-700 flex items-center justify-center text-sky-400 shrink-0">
-              <Compass className="w-4 h-4" />
+      {/* 2. SIMULATED OPERATING AREA SELECTOR */}
+      <div className="p-2 rounded-lg bg-[#0e1422]/95 border border-slate-700/80 shadow-sm space-y-1.5">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-1.5 pb-1 border-b border-slate-800/80">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-6 h-6 rounded bg-slate-800 border border-slate-700 flex items-center justify-center text-sky-400 shrink-0">
+              <Compass className="w-3.5 h-3.5" />
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-xs font-mono font-bold text-slate-200 tracking-wider">
                   SIMULATED OPERATING AREA
                 </span>
-                <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/30">
                   SIMULATION SCENARIO ONLY
                 </span>
-                <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold text-sky-300 bg-sky-500/10 border border-sky-500/30">
+                <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold text-sky-300 bg-sky-500/10 border border-sky-500/30">
                   {currentArea.environmentTag}
                 </span>
               </div>
-              <p className="text-[11px] font-mono text-slate-400 mt-0.5">
+              <p className="text-[10px] font-mono text-slate-400 mt-0.5 leading-tight truncate md:whitespace-normal">
                 {currentArea.description}
               </p>
             </div>
           </div>
 
-          <div className="text-xs font-mono text-slate-400 flex items-center gap-2 self-start lg:self-auto">
-            <span className="text-[10px] text-slate-500 uppercase tracking-wider">TELEMETRY MODE:</span>
-            <span className="px-2 py-0.5 rounded bg-slate-900 text-slate-300 border border-slate-700 font-semibold">
+          <div className="text-[11px] font-mono text-slate-400 flex items-center gap-1.5 self-start lg:self-auto shrink-0">
+            <span className="text-[9px] text-slate-500 uppercase tracking-wider">TELEMETRY:</span>
+            <span className="px-1.5 py-0.5 rounded bg-slate-900 text-slate-300 border border-slate-700 font-semibold text-[10px]">
               SIMULATED TELEMETRY
             </span>
           </div>
         </div>
 
-        {/* 3 Area Selector Segmented Buttons */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pt-0.5">
-          <span className="text-[11px] font-mono font-bold text-slate-400 uppercase tracking-wider whitespace-nowrap">
+        {/* 3 Area Selector Segmented Buttons (1 Row on Desktop) */}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
+          <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider whitespace-nowrap hidden sm:inline">
             SELECT SCENARIO:
           </span>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 flex-1">
@@ -494,21 +911,21 @@ export default function UavTrackingPage() {
                   key={area.id}
                   type="button"
                   onClick={() => setSelectedAreaId(area.id)}
-                  className={`p-2.5 rounded-lg text-left font-mono transition-all border cursor-pointer flex flex-col justify-between ${
+                  className={`py-1 px-2 rounded-lg text-left font-mono transition-all border cursor-pointer flex flex-col justify-between ${
                     isSelected
                       ? `${area.colorTint.buttonActiveClass} ring-1 ring-offset-1 ring-offset-slate-950`
                       : 'bg-slate-900/80 text-slate-300 border-slate-700/80 hover:border-slate-600 hover:bg-slate-900'
                   }`}
                   aria-pressed={isSelected}
                 >
-                  <div className="flex items-center justify-between w-full mb-1">
-                    <span className="text-xs font-bold truncate">{area.name}</span>
+                  <div className="flex items-center justify-between w-full">
+                    <span className="text-[11px] font-bold truncate">{area.name}</span>
                     <span
-                      className={`w-2 h-2 rounded-full ${isSelected ? 'animate-pulse' : ''}`}
+                      className={`w-1.5 h-1.5 rounded-full shrink-0 ml-1.5 ${isSelected ? 'animate-pulse' : ''}`}
                       style={{ backgroundColor: area.colorTint.accentColor }}
                     />
                   </div>
-                  <div className="text-[10px] text-slate-400 font-normal">
+                  <div className="text-[9px] text-slate-400 font-normal truncate mt-0.5">
                     {area.environmentalProfile.atmosphericCondition}
                   </div>
                 </button>
@@ -519,71 +936,149 @@ export default function UavTrackingPage() {
       </div>
 
       {/* 3. Persistent Active UAV Context Banner */}
-      <div className="p-3 rounded-lg bg-[#0e1422]/95 border border-slate-700/80 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 shadow-sm">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded bg-slate-800 border border-slate-700 flex items-center justify-center text-sky-400 shrink-0">
-            <Crosshair className="w-4 h-4" />
+      <div className="py-1 px-2.5 rounded-lg bg-[#0e1422]/95 border border-slate-700/80 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 shadow-sm">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="w-5 h-5 rounded bg-slate-800 border border-slate-700 flex items-center justify-center text-sky-400 shrink-0">
+            <Crosshair className="w-3 h-3" />
           </div>
-          <div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-xs font-mono font-bold text-slate-400 tracking-wider">
-                SHOWING DATA FOR:
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
+            <span className="text-[11px] font-mono font-bold text-slate-400 tracking-wider">
+              SHOWING DATA FOR:
+            </span>
+            <span className="text-sm font-bold font-mono text-sky-400 tracking-wide">
+              {activeUavId}
+            </span>
+            <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 text-[9px] font-mono font-semibold">
+              PHASE: {activeUav?.flight_phase || activeUav?.engine_telemetry?.flight_phase || 'CRUISE'}
+            </span>
+            {isActiveUavCompleted ? (
+              <span className="px-2 py-0.5 rounded text-[9px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/60 flex items-center gap-1 shadow-sm">
+                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                <span>RTB COMPLETE — ARRIVED AT HOME BASE</span>
               </span>
-              <span className="text-base font-bold font-mono text-sky-400 tracking-wide">
-                {activeUavId}
+            ) : isActiveUavRtbActive && (isActiveUavManual || simulatedNoticeUav === activeUavId) ? (
+              <span className="px-2 py-0.5 rounded text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/60 flex items-center gap-1 shadow-sm">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                <span>SIMULATED RTB ACTIVE — {activeUavId}</span>
               </span>
-              <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 text-[10px] font-mono font-semibold">
-                PHASE: {activeUav?.flight_phase || activeUav?.engine_telemetry?.flight_phase || 'CRUISE'}
+            ) : isActiveUavRtbActive ? (
+              <span className="px-2 py-0.5 rounded text-[9px] font-mono font-bold bg-rose-500/20 text-rose-300 border border-rose-500/60 flex items-center gap-1 shadow-sm">
+                <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse" />
+                <span>EMERGENCY RTB ACTIVE — {activeUavId}</span>
               </span>
-              <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold border ${activeUavTheme.badgeBg}`}>
-                <span className={`w-1.5 h-1.5 rounded-full inline-block mr-1.5 ${activeUavTheme.dotClass}`} />
+            ) : (
+              <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold border ${activeUavTheme.badgeBg}`}>
+                <span className={`w-1.5 h-1.5 rounded-full inline-block mr-1 ${activeUavTheme.dotClass}`} />
                 {activeUavTheme.label}
               </span>
-              <span className="text-[10px] font-mono text-slate-400">
-                · AREA: <strong className="text-slate-200 font-bold">{currentArea.shortName}</strong>
-              </span>
-            </div>
+            )}
+            <span className="text-[9px] font-mono text-slate-400 hidden md:inline">
+              · AREA: <strong className="text-slate-200 font-bold">{currentArea.shortName}</strong>
+            </span>
           </div>
         </div>
 
-        {/* Quick UAV Selector */}
-        <div className="flex items-center gap-2 self-start sm:self-auto shrink-0 bg-slate-900 px-2.5 py-1 rounded border border-slate-700/80">
-          <label htmlFor="tracking-uav-select" className="text-xs font-mono text-slate-400 whitespace-nowrap">
-            ACTIVE UAV:
-          </label>
-          <select
-            id="tracking-uav-select"
-            value={activeUavId}
-            onChange={(e) => handleMarkerClick(e.target.value)}
-            className="bg-transparent text-slate-100 font-mono text-xs font-bold focus:outline-none cursor-pointer"
-            aria-label="Select Active UAV"
+        {/* Right side: Quick UAV Selector and RTB-06 Command Button */}
+        <div className="flex items-center gap-2 self-start sm:self-auto shrink-0 flex-wrap">
+          {/* Quick UAV Selector */}
+          <div className="flex items-center gap-1.5 bg-slate-900 px-2 py-0.5 rounded border border-slate-700/80">
+            <label htmlFor="tracking-uav-select" className="text-[10px] font-mono text-slate-400 whitespace-nowrap">
+              ACTIVE UAV:
+            </label>
+            <select
+              id="tracking-uav-select"
+              value={activeUavId}
+              onChange={(e) => handleMarkerClick(e.target.value)}
+              className="bg-transparent text-slate-100 font-mono text-[11px] font-bold focus:outline-none cursor-pointer"
+              aria-label="Select Active UAV"
+            >
+              {uavList.map((uav) => (
+                <option key={uav.uav_id} value={uav.uav_id} className="bg-slate-900 text-slate-100">
+                  {uav.uav_id} ({getStatusCategory(uav)})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* RTB-06: Operator Command Simulated RTB Button */}
+          <button
+            type="button"
+            id="cmd-simulated-rtb-btn"
+            onClick={() => setShowConfirmModal(true)}
+            disabled={isActiveUavRtbActive || isActiveUavCompleted}
+            title={
+              isActiveUavCompleted
+                ? `RTB Complete: ${activeUavId} has arrived at Home Base`
+                : isActiveUavRtbActive
+                  ? `RTB Active: ${activeUavId} is currently returning to Home Base`
+                  : `Start simulated RTB demonstration for ${activeUavId} (Decision Support Demo Only)`
+            }
+            className={`px-2.5 py-1 rounded text-[10px] font-mono font-bold flex items-center gap-1.5 transition-all shadow-sm ${
+              isActiveUavCompleted
+                ? 'bg-slate-800/80 text-emerald-400/80 border border-emerald-500/30 cursor-not-allowed opacity-75'
+                : isActiveUavRtbActive
+                  ? 'bg-rose-500/15 text-rose-300 border border-rose-500/40 cursor-not-allowed'
+                  : 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/60 hover:border-amber-400 cursor-pointer shadow-[0_0_10px_rgba(245,158,11,0.2)]'
+            }`}
+            aria-label={`Command simulated RTB for ${activeUavId}`}
           >
-            {uavList.map((uav) => (
-              <option key={uav.uav_id} value={uav.uav_id} className="bg-slate-900 text-slate-100">
-                {uav.uav_id} ({getStatusCategory(uav)})
-              </option>
-            ))}
-          </select>
+            <span className="text-xs">↩</span>
+            <span>COMMAND SIMULATED RTB</span>
+          </button>
+
+          {/* Reset button available when RTB is completed so operator can re-test mission patrol */}
+          {isActiveUavCompleted && (
+            <button
+              type="button"
+              id="reset-uav-mission-btn"
+              onClick={() => handleResetUavMission(activeUavId)}
+              title={`Reset ${activeUavId} to active mission patrol circuit`}
+              className="px-2 py-1 rounded text-[9.5px] font-mono font-semibold bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 hover:text-white transition-colors cursor-pointer"
+            >
+              ↺ RESET MISSION
+            </button>
+          )}
         </div>
       </div>
+
+      {/* RTB-06: Operator Simulated RTB Active Notification Bar */}
+      {isActiveUavRtbActive && (isActiveUavManual || simulatedNoticeUav === activeUavId) && (
+        <div className="px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/40 text-amber-300 text-xs font-mono font-bold flex items-center justify-between shadow-sm animate-fadeIn">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+            <span>SIMULATED RTB ACTIVE — {activeUavId}</span>
+            <span className="text-[10px] text-amber-400/80 font-normal hidden sm:inline">
+              (Decision Support Software Demo // In transit to Home Base)
+            </span>
+          </div>
+          <span className="text-[10px] font-semibold text-slate-400">
+            DESTINATION: HOME BASE
+          </span>
+        </div>
+      )}
 
       {/* 4. Dark Aerospace Tactical Radar Map Display */}
       <SectionCard
         title="OPERATIONAL AIRSPACE DISPLAY"
         subtitle={`SIMULATED OPERATING AREA: ${currentArea.name} // ${currentArea.environmentTag}`}
+        headerClassName="px-3 py-1"
+        contentClassName="p-1"
         action={
-          <div className="flex items-center gap-3 text-xs font-mono text-slate-400 flex-wrap">
-            <span className="text-[10px] px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-300">
+          <div className="flex items-center gap-2.5 text-[11px] font-mono text-slate-400 flex-wrap">
+            <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-300">
               SIMULATED OPERATING AREA
             </span>
-            <div className="flex items-center gap-1.5">
-              <Radio className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-              <span>RADAR ACTIVE // RANGE: 100 KM</span>
+            <div className="flex items-center gap-1">
+              <Radio className="w-3 h-3 text-emerald-400 animate-pulse" />
+              <span>RADAR ACTIVE // 100 KM</span>
             </div>
           </div>
         }
       >
-        <div className="relative w-full aspect-[16/10] min-h-[480px] rounded-xl bg-[#060a13] border border-slate-800/90 overflow-hidden shadow-2xl select-none">
+        <div
+          onClick={() => setSelectedPopupUavId(null)}
+          className="relative w-full aspect-[16/9] md:aspect-[2.2/1] lg:aspect-[2.5/1] min-h-[300px] max-h-[410px] rounded-xl bg-[#060a13] border border-slate-800/90 overflow-hidden shadow-2xl select-none"
+        >
           {/* SVG Tactical Coordinate Grid & Radar Rings */}
           <svg className="absolute inset-0 w-full h-full pointer-events-none" xmlns="http://www.w3.org/2000/svg">
             <defs>
@@ -665,61 +1160,116 @@ export default function UavTrackingPage() {
                 );
               });
             })}
+
+            {/* ── Emergency RTB Route Lines (RTB-03 & MAP UI-03) ── */}
+            {rtbActiveUavs.map((rtb) => {
+              if (rtb.isArrived) return null;
+              return (
+                <g key={`rtb-route-${rtb.uavId}`}>
+                  {/* Outer subtle glow corridor */}
+                  <line
+                    ref={(el) => {
+                      if (el) rtbGlowDomRefs.current[rtb.uavId] = el;
+                    }}
+                    x1={`${rtb.visualPos.x}%`}
+                    y1={`${rtb.visualPos.y}%`}
+                    x2={`${HOME_BASE_CENTER.x}%`}
+                    y2={`${HOME_BASE_CENTER.y}%`}
+                    stroke="#f43f5e"
+                    strokeWidth={rtb.isSelected ? '3.5' : '2'}
+                    strokeOpacity={rtb.isSelected ? '0.35' : '0.18'}
+                    strokeLinecap="round"
+                  />
+                  {/* High-visibility dashed tactical route vector */}
+                  <line
+                    ref={(el) => {
+                      if (el) rtbVectorDomRefs.current[rtb.uavId] = el;
+                    }}
+                    x1={`${rtb.visualPos.x}%`}
+                    y1={`${rtb.visualPos.y}%`}
+                    x2={`${HOME_BASE_CENTER.x}%`}
+                    y2={`${HOME_BASE_CENTER.y}%`}
+                    stroke={rtb.isSelected ? '#fb7185' : '#f43f5e'}
+                    strokeWidth={rtb.isSelected ? '2' : '1.5'}
+                    strokeDasharray={rtb.isSelected ? '6 3' : '5 4'}
+                    strokeOpacity={rtb.isSelected ? '0.95' : '0.8'}
+                    strokeLinecap="round"
+                  />
+                </g>
+              );
+            })}
           </svg>
 
           {/* Corner Coordinate HUD Stencils: SIMULATED OPERATING AREA METADATA (Top-Left) */}
-          <div className="absolute top-3 left-3 pointer-events-none text-[10px] font-mono text-slate-300 space-y-0.5 bg-[#060a13]/85 p-2 rounded border border-slate-800/80 backdrop-blur-sm shadow-md z-10">
+          <div className="absolute top-2 left-2 pointer-events-none text-[9px] font-mono text-slate-300 space-y-0.5 bg-[#060a13]/90 p-1.5 rounded border border-slate-800/80 backdrop-blur-sm shadow-md z-10">
             <div className="flex items-center gap-1.5">
-              <span className="text-slate-400 font-bold">SIMULATED OPERATING AREA:</span>
+              <span className="text-slate-400 font-bold">AREA:</span>
               <span className="font-bold" style={{ color: currentArea.colorTint.accentColor }}>{currentArea.name}</span>
             </div>
-            <div className="text-slate-400">ENVIRONMENT: <span className="text-slate-200 font-semibold">{currentArea.environmentTag}</span></div>
+            <div className="text-slate-400">ENV: <span className="text-slate-200 font-semibold">{currentArea.environmentTag}</span></div>
             <div className="text-slate-400">THEATER: <span className="text-slate-300">{currentArea.theater}</span></div>
             <div className="text-slate-400">DATUM: <span className="text-slate-300">{currentArea.datum}</span></div>
           </div>
 
           {/* Environmental Telemetry HUD (Top-Right) */}
-          <div className="absolute top-3 right-3 pointer-events-none text-right text-[10px] font-mono text-slate-300 space-y-0.5 bg-[#060a13]/85 p-2 rounded border border-slate-800/80 backdrop-blur-sm shadow-md z-10">
+          <div className="absolute top-2 right-2 pointer-events-none text-right text-[9px] font-mono text-slate-300 space-y-0.5 bg-[#060a13]/90 p-1.5 rounded border border-slate-800/80 backdrop-blur-sm shadow-md z-10">
             <div className="text-slate-400">RADAR: <span className="text-emerald-400 font-bold">TACTICAL SURVEILLANCE</span></div>
             <div className="text-slate-400">STATUS: <span className="text-sky-300 font-semibold">SIMULATED TELEMETRY</span></div>
             <div className="text-slate-400">CLIMATE: <span className="text-slate-200 font-semibold">{currentArea.environmentalProfile.climate}</span></div>
-            <div className="text-slate-400">CONDITIONS: <span className="text-slate-200">{currentArea.environmentalProfile.ambientTemp} · {currentArea.environmentalProfile.humidity}</span></div>
-            <div className="text-slate-400">ELEVATION: <span className="text-slate-300">{currentArea.environmentalProfile.pressureAlt}</span></div>
+            <div className="text-slate-400">COND: <span className="text-slate-200">{currentArea.environmentalProfile.ambientTemp} · {currentArea.environmentalProfile.humidity}</span></div>
+            <div className="text-slate-400">ELEV: <span className="text-slate-300">{currentArea.environmentalProfile.pressureAlt}</span></div>
           </div>
 
           {/* Map Legend (Bottom-Left) */}
-          <div className="absolute bottom-3 left-3 bg-[#0a0f1d]/90 border border-slate-800/90 rounded-lg p-2.5 backdrop-blur-sm shadow-lg text-[10px] font-mono space-y-1.5 z-20">
-            <div className="text-slate-400 font-bold border-b border-slate-800 pb-1 flex items-center justify-between gap-4">
+          <div className="absolute bottom-2 left-2 bg-[#0a0f1d]/90 border border-slate-800/90 rounded-lg p-2 backdrop-blur-sm shadow-lg text-[9px] font-mono space-y-1 z-20">
+            <div className="text-slate-400 font-bold border-b border-slate-800 pb-0.5 flex items-center justify-between gap-3">
               <span>STATUS LEGEND</span>
-              <span className="text-[9px] text-slate-500">ICAO/AERO</span>
+              <span className="text-[8px] text-slate-500">ICAO/AERO</span>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
-              <span className="text-slate-300">HEALTHY (HEALTH &ge; 80% &amp; LOW RISK)</span>
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
+              <span className="text-slate-300">HEALTHY (&ge; 80% &amp; LOW RISK)</span>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]" />
-              <span className="text-slate-300">WARNING / MEDIUM RISK (HEALTH 60-80%)</span>
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]" />
+              <span className="text-slate-300">WARNING (60-80% OR MED)</span>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.5)]" />
-              <span className="text-slate-300">FAULT / HIGH RISK (HEALTH &lt; 60% OR CRIT)</span>
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.5)]" />
+              <span className="text-slate-300">FAULT / HIGH RISK (&lt; 60% OR CRIT)</span>
             </div>
-            <div className="flex items-center gap-2 pt-0.5 border-t border-slate-800/60">
-              <span className="w-2.5 h-2.5 rotate-45 border" style={{ borderColor: currentArea.colorTint.accentColor, backgroundColor: `${currentArea.colorTint.accentColor}30` }} />
+            {rtbActiveUavs.length > 0 && (
+              <div className="flex items-center gap-1.5 pt-0.5 border-t border-rose-500/30">
+                <span className="w-3 h-0.5 bg-rose-500 border-b border-dashed border-rose-300 shadow-[0_0_6px_rgba(244,63,94,0.8)]" />
+                <span className="text-rose-400 font-semibold flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+                  EMERGENCY RTB ROUTE ({rtbActiveUavs.length} ACTIVE)
+                </span>
+              </div>
+            )}
+            {uavList.some((u) => isUavRtbCompleted(u.uav_id) || animSnapshot[u.uav_id]?.rtbCompleted) && (
+              <div className="flex items-center gap-1.5 pt-0.5 border-t border-emerald-500/30">
+                <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
+                <span className="text-emerald-400 font-semibold">
+                  RTB COMPLETE (AT HOME BASE)
+                </span>
+              </div>
+            )}
+            <div className="flex items-center gap-1.5 pt-0.5 border-t border-slate-800/60">
+              <span className="w-2 h-2 rotate-45 border" style={{ borderColor: currentArea.colorTint.accentColor, backgroundColor: `${currentArea.colorTint.accentColor}30` }} />
               <span style={{ color: currentArea.colorTint.accentColor }}>{currentArea.homeBaseName}</span>
             </div>
           </div>
 
-          {/* HOME BASE MARKER (Center, Dynamic Base Callout) */}
+          {/* HOME BASE MARKER (Center, Dynamic Base Callout) — z-25 keeps base clear and prominent */}
           <div
-            className="absolute -translate-x-1/2 -translate-y-1/2 z-20 group"
+            className="absolute -translate-x-1/2 -translate-y-1/2 z-25 group pointer-events-none"
             style={{ left: `${HOME_BASE_CENTER.x}%`, top: `${HOME_BASE_CENTER.y}%` }}
           >
             {/* Diamond Airbase Anchor */}
             <div className="relative flex flex-col items-center">
               <div
-                className="w-8 h-8 rotate-45 rounded bg-slate-950/95 border-2 shadow-lg flex items-center justify-center transition-transform group-hover:scale-110"
+                className="w-8 h-8 rotate-45 rounded bg-slate-950/95 border-2 shadow-lg flex items-center justify-center transition-transform group-hover:scale-110 pointer-events-auto"
                 style={{ borderColor: currentArea.colorTint.accentColor, boxShadow: `0 0 15px ${currentArea.colorTint.accentColor}50` }}
               >
                 <Home className="w-4 h-4 -rotate-45" style={{ color: currentArea.colorTint.accentColor }} />
@@ -733,7 +1283,34 @@ export default function UavTrackingPage() {
             </div>
           </div>
 
-          {/* EXACTLY 5 UAV TACTICAL MARKERS */}
+          {/* EMERGENCY RTB ROUTE LABELS (RTB-03 & MAP UI-03) — Staggered along vectors, suppressed when arrived */}
+          {rtbActiveUavs.map((rtb) => {
+            if (rtb.isArrived) return null;
+            return (
+              <div
+                key={`rtb-label-${rtb.uavId}`}
+                ref={(el) => {
+                  if (el) rtbLabelDomRefs.current[rtb.uavId] = el;
+                }}
+                className="absolute -translate-x-1/2 -translate-y-1/2 pointer-events-none z-20"
+                style={{ left: `${rtb.labelPos.x}%`, top: `${rtb.labelPos.y}%` }}
+              >
+                <div
+                  className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-mono font-bold whitespace-nowrap shadow-lg ${
+                    rtb.isSelected
+                      ? 'bg-slate-950/95 text-rose-300 border border-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.5)] ring-1 ring-rose-500/50'
+                      : 'bg-slate-950/90 text-rose-400 border border-rose-600/70 shadow-[0_0_6px_rgba(244,63,94,0.25)]'
+                  }`}
+                  style={{ backdropFilter: 'blur(4px)' }}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+                  <span>RTB · {rtb.uavId}</span>
+                </div>
+              </div>
+            );
+          })}
+
+          {/* EXACTLY 5 UAV TACTICAL MARKERS — Visual deconfliction and directional callsign pills */}
           {uavList.map((uav) => {
             const uavId = uav.uav_id;
             // Use live animated position; fall back to static definition during first frame
@@ -742,227 +1319,249 @@ export default function UavTrackingPage() {
             const pos = animPos
               ? { x: animPos.x, y: animPos.y, heading: animPos.heading }
               : staticFallback;
+            const visualPos = {
+              x: animPos?.visualX ?? pos.x,
+              y: animPos?.visualY ?? pos.y,
+              heading: pos.heading,
+            };
             const statusCat = getStatusCategory(uav);
             const theme = getStatusTheme(statusCat);
             const isSelected = uavId === activeUavId;
             const isPopupOpen = selectedPopupUavId === uavId;
+            const isCompleted = isUavRtbCompleted(uavId) || Boolean(animPos?.rtbCompleted);
             const healthNum = uav.engine_health !== undefined ? Number(uav.engine_health) : null;
             const healthText = healthNum !== null ? `${healthNum.toFixed(1)}%` : '--';
+
+            // Calculate non-overlapping directional slot for callsign pill
+            const labelSlot = getLabelSlot(uavId, visualPos, animSnapshot);
+            const labelSlotClass =
+              labelSlot === 'top'
+                ? 'bottom-[calc(100%+5px)] left-1/2 -translate-x-1/2'
+                : labelSlot === 'left'
+                  ? 'right-[calc(100%+6px)] top-1/2 -translate-y-1/2'
+                  : labelSlot === 'right'
+                    ? 'left-[calc(100%+6px)] top-1/2 -translate-y-1/2'
+                    : 'top-[calc(100%+5px)] left-1/2 -translate-x-1/2';
 
             return (
               <div
                 key={uavId}
-                className={`absolute -translate-x-1/2 -translate-y-1/2 transition-all duration-300 ${
-                  isPopupOpen ? 'z-30' : 'z-20'
+                ref={(el) => {
+                  if (el) markerDomRefs.current[uavId] = el;
+                }}
+                className={`absolute -translate-x-1/2 -translate-y-1/2 ${
+                  isPopupOpen ? 'z-50' : 'z-20'
                 }`}
-                style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
+                style={{ left: `${visualPos.x}%`, top: `${visualPos.y}%` }}
               >
                 {/* Tactical Marker Container */}
                 <div className="relative flex flex-col items-center">
-                  {/* Selected / Active Pulsing Tactical Ring — opacity reduced so label pill stays readable */}
+                  {/* Selected / Active Pulsing Tactical Ring */}
                   {isSelected && (
                     <div
-                      className="absolute -inset-2.5 rounded-full border-2 animate-ping pointer-events-none opacity-20"
-                      style={{ borderColor: theme.color }}
+                      className="absolute -inset-2 rounded-full border-2 animate-ping pointer-events-none opacity-20"
+                      style={{ borderColor: isCompleted ? '#10b981' : theme.color }}
                     />
                   )}
 
                   {/* Marker Button */}
                   <button
                     type="button"
-                    onClick={() => handleMarkerClick(uavId)}
-                    className={`relative w-9 h-9 rounded-full flex items-center justify-center transition-all duration-200 focus:outline-none shadow-lg cursor-pointer ${
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleMarkerClick(uavId);
+                    }}
+                    className={`relative w-8 h-8 rounded-full flex items-center justify-center transition-all duration-200 focus:outline-none shadow-lg cursor-pointer ${
                       isSelected
                         ? 'ring-2 ring-sky-400 ring-offset-2 ring-offset-slate-950 scale-110'
                         : 'hover:scale-105'
-                    } ${theme.bgClass} border-2 ${theme.borderClass}`}
+                    } ${isCompleted ? 'bg-emerald-500/20 border-emerald-500/60' : `${theme.bgClass} ${theme.borderClass}`} border-2`}
                     style={{
-                      boxShadow: `0 0 14px ${theme.color}40`,
+                      boxShadow: `0 0 12px ${isCompleted ? '#10b98140' : `${theme.color}40`}`,
                     }}
                     aria-label={`Select ${uavId} tactical marker`}
                   >
                     {/* Rotated Drone / Airplane Icon */}
                     <div
-                      style={{ transform: `rotate(${pos.heading}deg)` }}
-                      className="transition-transform duration-300"
+                      ref={(el) => {
+                        if (el) iconDomRefs.current[uavId] = el;
+                      }}
+                      style={{ transform: `rotate(${visualPos.heading}deg)` }}
                     >
-                      <Plane className={`w-4 h-4 ${theme.textClass}`} />
+                      <Plane className={`w-3.5 h-3.5 ${isCompleted ? 'text-emerald-400' : theme.textClass}`} />
                     </div>
 
                     {/* Small Status Indicator Dot */}
                     <span
-                      className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-slate-950 ${theme.dotClass}`}
+                      className={`absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full border border-slate-950 ${isCompleted ? 'bg-emerald-400' : theme.dotClass}`}
                     />
                   </button>
 
-                  {/* Marker Callsign Label Pill — strong dark bg ensures readability over rings/trails */}
+                  {/* Marker Callsign Label Pill — Directionally slotted to prevent overlap */}
                   <div
-                    onClick={() => handleMarkerClick(uavId)}
-                    className={`mt-1.5 px-2 py-0.5 rounded text-[10px] font-mono font-bold whitespace-nowrap cursor-pointer transition-all border shadow-md flex items-center gap-1.5 ${
-                      isSelected
-                        ? 'bg-[#0b1221] text-sky-300 border-sky-500/80 shadow-[0_0_12px_rgba(14,165,233,0.4)]'
-                        : 'bg-[#060a13]/95 text-slate-200 border-slate-700/80 hover:border-slate-500'
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleMarkerClick(uavId);
+                    }}
+                    className={`absolute ${labelSlotClass} px-1.5 py-0.5 rounded text-[9px] font-mono font-bold whitespace-nowrap cursor-pointer transition-all border shadow-md flex items-center gap-1 z-20 ${
+                      isCompleted
+                        ? 'bg-emerald-950/95 text-emerald-200 border-emerald-500/80 shadow-[0_0_10px_rgba(16,185,129,0.3)]'
+                        : isSelected
+                          ? 'bg-[#0b1221] text-sky-300 border-sky-500/80 shadow-[0_0_10px_rgba(14,165,233,0.4)]'
+                          : 'bg-[#060a13]/95 text-slate-200 border-slate-700/80 hover:border-slate-500'
                     }`}
                     style={{ backdropFilter: 'blur(4px)' }}
                   >
                     <span>{uavId}</span>
-                    <span className={`text-[9px] font-semibold ${theme.textClass}`}>
-                      {healthText}
-                    </span>
+                    {isCompleted ? (
+                      <span className="text-[8px] font-bold text-emerald-400 flex items-center gap-0.5">
+                        <CheckCircle2 className="w-2.5 h-2.5 inline" />
+                        <span>RTB COMPLETE</span>
+                      </span>
+                    ) : (
+                      <span className={`text-[8px] font-semibold ${theme.textClass}`}>
+                        {healthText}
+                      </span>
+                    )}
                   </div>
 
-                  {/* SMALL POPUP ON CLICK (Requirement 6) — boundary-aware positioning */}
+                  {/* RTB-05: Dedicated compact status callout at Home Base for completed UAV */}
+                  {isCompleted && (
+                    <div className="absolute top-[calc(100%+24px)] left-1/2 -translate-x-1/2 pointer-events-none z-30">
+                      <div className="px-1.5 py-0.5 rounded text-[7.5px] font-mono font-bold bg-emerald-950/95 text-emerald-300 border border-emerald-500/80 shadow-lg whitespace-nowrap flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                        <span>RTB COMPLETE · {uavId} · ARRIVED AT HOME BASE</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* COMPACT SIDE-ANCHORED INFORMATION POPUP (MAP UI-03) */}
                   {isPopupOpen && (() => {
-                    // ── Popup sizing constants (percentage of map) ──────────
-                    // Popup is ~256px wide; map is variable. Use % thresholds:
-                    //   POPUP_W_PCT  ≈ width of popup as % of map width
-                    //   POPUP_H_PCT  ≈ approx height of popup as % of map height
-                    // These drive open-direction decisions, not exact pixel math.
-                    const POPUP_W_PCT = 27;   // ~256 px on a ~960 px map ≈ 27%
-                    const POPUP_H_PCT = 44;   // ~260 px on a ~600 px map ≈ 44%
-                    const MARKER_H_PCT = 9;   // vertical space the marker+label takes
-
-                    // ── Legend avoidance zone (bottom-left) ──────────────────
-                    // Legend sits at bottom-left; avoid placing popup there.
-                    const LEGEND_X_MAX = 30;  // legend ends at ~30% from left
-                    const LEGEND_Y_MIN = 58;  // legend starts at ~58% from top
-
-                    // ── Horizontal direction ──────────────────────────────────
-                    // Prefer opening to the right; flip left when near right edge.
-                    const openRight = pos.x + POPUP_W_PCT <= 97;
-                    const openLeft  = !openRight;
-
-                    // ── Vertical direction ───────────────────────────────────
-                    // Default: popup opens BELOW the marker (top-14).
-                    // Open UPWARD when near the bottom OR when opening right+left
-                    // into the legend zone.
-                    const nearBottom = pos.y + MARKER_H_PCT + POPUP_H_PCT > 96;
-                    const wouldHitLegend =
-                      openLeft &&
-                      pos.x - POPUP_W_PCT < LEGEND_X_MAX &&
-                      pos.y + MARKER_H_PCT > LEGEND_Y_MIN;
-                    const openUp = nearBottom || wouldHitLegend;
-
-                    // ── Compute absolute style ────────────────────────────────
+                    const openLeft = visualPos.x > 55;
                     const popupStyle = {
                       position: 'absolute',
-                      width: '256px',
-                      maxHeight: '320px',
-                      overflowY: 'auto',
+                      width: '210px',
+                      zIndex: 60,
                     };
 
-                    // Horizontal anchor
-                    if (openRight) {
-                      popupStyle.left = '50%';   // left edge aligns with marker centre
+                    if (openLeft) {
+                      popupStyle.right = 'calc(100% + 10px)';
                     } else {
-                      popupStyle.right = '50%';  // right edge aligns with marker centre
+                      popupStyle.left = 'calc(100% + 10px)';
                     }
 
-                    // Vertical anchor
-                    if (openUp) {
-                      // position above the marker button (marker button ~36px + label ~24px ≈ 60px)
-                      popupStyle.bottom = '110%';
+                    if (visualPos.y < 22) {
+                      popupStyle.top = '0';
+                    } else if (visualPos.y > 78) {
+                      popupStyle.bottom = '0';
                     } else {
-                      popupStyle.top = '110%';
+                      popupStyle.top = '50%';
+                      popupStyle.transform = 'translateY(-50%)';
                     }
 
                     return (
-                    <div
-                      style={popupStyle}
-                      className="z-40 p-3 rounded-lg bg-[#0b101d]/98 border border-slate-700/90 shadow-2xl backdrop-blur-md space-y-2 text-slate-100 font-mono"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {/* Popup Header */}
-                      <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
-                        <div className="flex items-center gap-2">
-                          <Plane className="w-3.5 h-3.5 text-sky-400" />
-                          <span className="text-xs font-bold tracking-wide text-slate-100">
-                            {uavId}
-                          </span>
-                          {isSelected && (
-                            <span className="text-[9px] px-1 rounded bg-sky-500/20 text-sky-400 border border-sky-500/30">
-                              ACTIVE
+                      <div
+                        style={popupStyle}
+                        className="p-2 rounded-lg bg-[#0a0f1d]/98 border border-slate-700/90 shadow-2xl backdrop-blur-md space-y-1.5 text-slate-100 font-mono text-[10px] select-text"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {/* Header */}
+                        <div className="flex items-center justify-between border-b border-slate-800 pb-1">
+                          <div className="flex items-center gap-1.5">
+                            <Plane className="w-3 h-3 text-sky-400" />
+                            <span className="text-[11px] font-bold text-slate-100">{uavId}</span>
+                            {isSelected && (
+                              <span className="text-[8px] px-1 py-0.2 rounded bg-sky-500/20 text-sky-400 border border-sky-500/30">
+                                ACTIVE
+                              </span>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedPopupUavId(null);
+                            }}
+                            className="p-0.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800 focus:outline-none cursor-pointer"
+                            aria-label="Close popup"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+
+                        {/* Status Classification */}
+                        <div className="flex items-center justify-between text-[9px]">
+                          <span className="text-slate-400 font-medium">STATUS:</span>
+                          {isCompleted ? (
+                            <span className="px-1.5 py-0.5 rounded font-bold border text-[8px] bg-emerald-500/20 text-emerald-300 border-emerald-500/50 flex items-center gap-1">
+                              <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" />
+                              RTB COMPLETE
+                            </span>
+                          ) : isSimulatedRtbActive(uavId) ? (
+                            <span className="px-1.5 py-0.5 rounded font-bold border text-[8px] bg-amber-500/20 text-amber-300 border-amber-500/50 flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                              SIMULATED RTB
+                            </span>
+                          ) : (
+                            <span className={`px-1.5 py-0.5 rounded font-bold border text-[8px] ${theme.badgeBg}`}>
+                              {theme.label}
                             </span>
                           )}
                         </div>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelectedPopupUavId(null);
-                          }}
-                          className="p-1 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800 focus:outline-none"
-                          aria-label="Close popup"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
 
-                      {/* Status Tag */}
-                      <div className="flex items-center justify-between text-[10px]">
-                        <span className="text-slate-400">STATUS CLASSIFICATION:</span>
-                        <span className={`px-2 py-0.5 rounded font-bold border text-[9px] ${theme.badgeBg}`}>
-                          {theme.label}
-                        </span>
-                      </div>
+                        {isCompleted && (
+                          <div className="p-1 rounded bg-emerald-950/80 border border-emerald-500/60 text-emerald-300 text-[8.5px] font-bold flex items-center justify-between">
+                            <span>RECOVERY:</span>
+                            <span className="text-white">ARRIVED AT HOME BASE</span>
+                          </div>
+                        )}
 
-                      {/* 5 Required Live AI & Telemetry Results */}
-                      <div className="grid grid-cols-2 gap-1.5 pt-1 text-[11px]">
-                        {/* 1. Engine Health */}
-                        <div className="p-1.5 rounded bg-slate-900/90 border border-slate-800/80">
-                          <span className="text-[9px] text-slate-400 block">ENGINE HEALTH</span>
-                          <span className={`font-bold block ${theme.textClass}`}>
-                            {healthText}
-                          </span>
+                        {/* 5 Required Live AI & Telemetry Results in 2-col compact grid */}
+                        <div className="grid grid-cols-2 gap-1 text-[10px]">
+                          <div className="p-1 rounded bg-slate-900/90 border border-slate-800/80">
+                            <span className="text-[8px] text-slate-400 block">HEALTH</span>
+                            <span className={`font-bold block ${theme.textClass}`}>{healthText}</span>
+                          </div>
+                          <div className="p-1 rounded bg-slate-900/90 border border-slate-800/80">
+                            <span className="text-[8px] text-slate-400 block">MISSION RISK</span>
+                            <span className={`font-bold block ${
+                              (uav.mission_risk || '').toUpperCase() === 'HIGH' || (uav.mission_risk || '').toUpperCase() === 'CRITICAL'
+                                ? 'text-rose-400'
+                                : (uav.mission_risk || '').toUpperCase() === 'MEDIUM'
+                                  ? 'text-amber-400'
+                                  : 'text-emerald-400'
+                            }`}>
+                              {uav.mission_risk || 'LOW'}
+                            </span>
+                          </div>
+                          <div className="p-1 rounded bg-slate-900/90 border border-slate-800/80 col-span-2">
+                            <span className="text-[8px] text-slate-400 block">FAULT</span>
+                            <span className="font-bold text-slate-200 block truncate">
+                              {(uav.predicted_fault || 'NORMAL').replace(/_/g, ' ')}
+                            </span>
+                          </div>
+                          <div className="p-1 rounded bg-slate-900/90 border border-slate-800/80">
+                            <span className="text-[8px] text-slate-400 block">RUL</span>
+                            <span className="font-bold text-sky-300 block">
+                              {(uav.predicted_rul ?? uav.predicted_rul_hours) !== undefined
+                                ? `${Math.round(Number(uav.predicted_rul ?? uav.predicted_rul_hours))} hrs`
+                                : '--'}
+                            </span>
+                          </div>
+                          <div className="p-1 rounded bg-slate-900/90 border border-slate-800/80">
+                            <span className="text-[8px] text-slate-400 block">PHASE</span>
+                            <span className="font-bold text-slate-200 block truncate">
+                              {isCompleted ? 'ARRIVED AT BASE' : (uav.flight_phase || uav.engine_telemetry?.flight_phase || 'CRUISE')}
+                            </span>
+                          </div>
                         </div>
 
-                        {/* 2. Mission Risk */}
-                        <div className="p-1.5 rounded bg-slate-900/90 border border-slate-800/80">
-                          <span className="text-[9px] text-slate-400 block">MISSION RISK</span>
-                          <span className={`font-bold block ${
-                            (uav.mission_risk || '').toUpperCase() === 'HIGH' || (uav.mission_risk || '').toUpperCase() === 'CRITICAL'
-                              ? 'text-rose-400'
-                              : (uav.mission_risk || '').toUpperCase() === 'MEDIUM'
-                                ? 'text-amber-400'
-                                : 'text-emerald-400'
-                          }`}>
-                            {uav.mission_risk || 'LOW'}
-                          </span>
-                        </div>
-
-                        {/* 3. Predicted Fault */}
-                        <div className="p-1.5 rounded bg-slate-900/90 border border-slate-800/80 col-span-2">
-                          <span className="text-[9px] text-slate-400 block">PREDICTED FAULT</span>
-                          <span className="font-bold text-slate-200 block truncate">
-                            {(uav.predicted_fault || 'NORMAL').replace(/_/g, ' ')}
-                          </span>
-                        </div>
-
-                        {/* 4. RUL */}
-                        <div className="p-1.5 rounded bg-slate-900/90 border border-slate-800/80">
-                          <span className="text-[9px] text-slate-400 block">PREDICTED RUL</span>
-                          <span className="font-bold text-sky-300 block">
-                            {(uav.predicted_rul ?? uav.predicted_rul_hours) !== undefined
-                              ? `${Math.round(Number(uav.predicted_rul ?? uav.predicted_rul_hours))} hrs`
-                              : '--'}
-                          </span>
-                        </div>
-
-                        {/* 5. Flight Phase */}
-                        <div className="p-1.5 rounded bg-slate-900/90 border border-slate-800/80">
-                          <span className="text-[9px] text-slate-400 block">FLIGHT PHASE</span>
-                          <span className="font-bold text-slate-200 block truncate">
-                            {uav.flight_phase || uav.engine_telemetry?.flight_phase || 'CRUISE'}
-                          </span>
+                        {/* Footer */}
+                        <div className="pt-0.5 border-t border-slate-800/80 flex items-center justify-between text-[8px] text-slate-400">
+                          <span className="truncate">{currentArea.shortName}</span>
+                          <span className="text-emerald-400 font-semibold">{isCompleted ? 'AT BASE' : 'LIVE'}</span>
                         </div>
                       </div>
-
-                      {/* Popup Footer Note */}
-                      <div className="pt-1 border-t border-slate-800/80 flex items-center justify-between text-[9px] text-slate-400">
-                        <span>OPERATING THEATER: {currentArea.shortName}</span>
-                        <span className="text-emerald-400 font-semibold">LIVE CONNECTED</span>
-                      </div>
-                    </div>
                     );
                   })()}
                 </div>
@@ -973,12 +1572,13 @@ export default function UavTrackingPage() {
       </SectionCard>
 
       {/* 5. Fleet Telemetry Quick-Jump Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
         {uavList.map((uav) => {
           const uavId = uav.uav_id;
           const statusCat = getStatusCategory(uav);
           const theme = getStatusTheme(statusCat);
           const isSelected = uavId === activeUavId;
+          const isCompletedUav = Boolean(isUavRtbCompleted(uavId) || animSnapshot[uavId]?.rtbCompleted);
           const healthNum = uav.engine_health !== undefined ? Number(uav.engine_health) : null;
           const healthVal = healthNum !== null ? `${healthNum.toFixed(1)}%` : '--';
 
@@ -987,15 +1587,15 @@ export default function UavTrackingPage() {
               key={uavId}
               type="button"
               onClick={() => handleMarkerClick(uavId)}
-              className={`p-3 rounded-lg text-left transition-all duration-200 border flex flex-col justify-between font-mono cursor-pointer ${
+              className={`p-2 rounded-lg text-left transition-all duration-200 border flex flex-col justify-between font-mono cursor-pointer ${
                 isSelected
                   ? 'bg-[#10182b] border-sky-500/80 shadow-[0_0_12px_rgba(14,165,233,0.25)] ring-1 ring-sky-500'
                   : 'bg-slate-900/70 border-slate-800 hover:border-slate-700 hover:bg-slate-900'
               }`}
             >
-              <div className="flex items-center justify-between w-full mb-1.5">
+              <div className="flex items-center justify-between w-full mb-1">
                 <span className="text-xs font-bold text-slate-200">{uavId}</span>
-                <span className={`w-2 h-2 rounded-full ${theme.dotClass}`} />
+                <span className={`w-2 h-2 rounded-full ${isCompletedUav ? 'bg-emerald-400' : theme.dotClass}`} />
               </div>
               <div className="text-[10px] text-slate-400 space-y-0.5">
                 <div className="flex justify-between">
@@ -1006,12 +1606,19 @@ export default function UavTrackingPage() {
                   <span>Risk:</span>
                   <span className="font-semibold text-slate-300">{uav.mission_risk || 'LOW'}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span>Phase:</span>
-                  <span className="text-slate-400 truncate">{uav.flight_phase || uav.engine_telemetry?.flight_phase || 'CRUISE'}</span>
-                </div>
+                {isCompletedUav ? (
+                  <div className="flex justify-between text-emerald-400 font-bold">
+                    <span>Status:</span>
+                    <span className="truncate">RTB COMPLETE</span>
+                  </div>
+                ) : (
+                  <div className="flex justify-between">
+                    <span>Phase:</span>
+                    <span className="text-slate-400 truncate">{uav.flight_phase || uav.engine_telemetry?.flight_phase || 'CRUISE'}</span>
+                  </div>
+                )}
               </div>
-              <div className="mt-2 pt-1.5 border-t border-slate-800/80 flex items-center justify-between text-[9px] text-slate-500">
+              <div className="mt-1.5 pt-1 border-t border-slate-800/80 flex items-center justify-between text-[9px] text-slate-500">
                 <span>{currentArea.shortName}</span>
                 <span className={isSelected ? 'text-sky-400 font-bold' : ''}>
                   {isSelected ? 'SELECTED' : 'SELECT'}
@@ -1021,6 +1628,72 @@ export default function UavTrackingPage() {
           );
         })}
       </div>
+
+      {/* 6. RTB-06: Confirmation Modal for Simulated RTB Command */}
+      {showConfirmModal && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 animate-fadeIn"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="confirm-modal-title"
+        >
+          <div className="w-full max-w-md rounded-xl bg-[#0a0f1d] border border-amber-500/60 p-4 shadow-2xl space-y-3 font-mono text-slate-100">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+              <div className="flex items-center gap-2 text-amber-400">
+                <AlertTriangle className="w-4 h-4" />
+                <span id="confirm-modal-title" className="text-xs font-bold tracking-wider uppercase">
+                  SIMULATED RTB COMMAND
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowConfirmModal(false)}
+                className="text-slate-400 hover:text-slate-200 p-1 cursor-pointer"
+                aria-label="Close dialog"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-sm font-bold text-slate-100">
+                Start simulated RTB for {activeUavId}?
+              </p>
+              <div className="p-2.5 rounded bg-amber-500/10 border border-amber-500/30 text-[10.5px] text-amber-300/90 leading-relaxed space-y-1">
+                <div className="font-bold text-amber-200">
+                  ⚠️ SIMULATED DEMONSTRATION ONLY
+                </div>
+                <div>
+                  This is only software demonstration and decision support. It does NOT represent or transmit real UAV flight-control commands.
+                </div>
+              </div>
+              <div className="text-[10px] text-slate-400">
+                Target: <strong className="text-slate-200">{activeUavId}</strong> · Destination: <strong className="text-sky-300">HOME BASE ({currentArea.homeBaseName})</strong>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                id="cancel-simulated-rtb-btn"
+                onClick={() => setShowConfirmModal(false)}
+                className="px-3 py-1.5 rounded text-xs font-bold text-slate-300 bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-colors cursor-pointer"
+              >
+                CANCEL
+              </button>
+              <button
+                type="button"
+                id="confirm-simulated-rtb-btn"
+                onClick={handleConfirmSimulatedRtb}
+                className="px-3.5 py-1.5 rounded text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 border border-amber-300 transition-all flex items-center gap-1.5 cursor-pointer shadow-[0_0_12px_rgba(245,158,11,0.4)]"
+              >
+                <span className="text-xs">↩</span>
+                <span>CONFIRM SIMULATED RTB</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

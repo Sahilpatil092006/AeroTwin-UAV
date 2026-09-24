@@ -5,6 +5,7 @@ import MetricCard from '../components/MetricCard';
 import RiskBadge from '../components/RiskBadge';
 import { STATUS_TYPES } from '../utils/status';
 import { Play, RotateCcw } from 'lucide-react';
+import { missionApi } from '../services/api';
 
 const DEFAULT_SCENARIO = {
   altitude: 18000,
@@ -22,46 +23,72 @@ export default function WhatIfPage() {
   const [isRunning, setIsRunning] = useState(false);
   const [forecast, setForecast] = useState(null);
 
-  const handleRunForecast = () => {
+  const handleRunForecast = async () => {
     setIsRunning(true);
-    // Simulate instantaneous numerical synthesis for interactive responsiveness
-    const peakCht = Math.round((108 + (throttle - 60) * 0.42 + ambientDelta * 0.58 + injectorDrift * 0.75) * 10) / 10;
-    const peakEgt = Math.round(745 + (throttle - 60) * 2.1 + ambientDelta * 1.4 + injectorDrift * 3.2);
-    const survivalProb = Math.max(
-      12,
-      Math.min(
-        99.4,
-        Math.round(
-          (98.5 -
-            (altitude > 20000 ? ((altitude - 20000) / 1000) * 2.2 : 0) -
-            (ambientDelta > 10 ? (ambientDelta - 10) * 1.6 : 0) -
-            (throttle > 80 ? (throttle - 80) * 1.1 : 0) -
-            injectorDrift * 1.4) *
-            10
-        ) / 10
-      )
-    );
-    const thermalMargin = Math.max(
-      0,
-      Math.min(
-        100,
-        Math.round((100 - ((peakCht / 135) * 50 + (peakEgt / 880) * 50)) * 10) / 10
-      )
-    );
-    const riskLevel = survivalProb >= 85 ? 'LOW' : survivalProb >= 65 ? 'MEDIUM' : 'HIGH';
+    try {
+      const data = await missionApi.evaluateWhatIf({
+        altitude: Number(altitude),
+        ambientDelta: Number(ambientDelta),
+        throttle: Number(throttle),
+        injectorDrift: Number(injectorDrift),
+      });
 
-    setForecast({
-      peakCht,
-      peakEgt,
-      survivalProb,
-      thermalMargin,
-      riskLevel,
-      timestamp: new Date().toLocaleTimeString(),
-    });
+      setForecast({
+        peakCht: data.peakCht,
+        peakEgt: data.peakEgt,
+        survivalProb: data.survivalProb,
+        thermalMargin: data.thermalMargin,
+        riskLevel: data.riskLevel,
+        statusTag: data.status_tag || 'WHAT-IF / SIMULATED RESULT',
+        engineHealth: data.engine_health,
+        engineFitness: data.engine_fitness_score,
+        predictedFault: data.predicted_fault,
+        anomalyStatus: data.anomaly_status,
+        recommendation: data.mission_recommendation,
+        reasonCodes: data.reason_codes,
+        explanation: data.explanation,
+        timestamp: data.timestamp || new Date().toLocaleTimeString(),
+      });
+    } catch (err) {
+      console.warn('[WhatIfPage] Backend forecast error, fallback calculation applied:', err);
+      // Fallback numerical calculation for resiliency
+      const peakCht = Math.round((108 + (throttle - 60) * 0.42 + ambientDelta * 0.58 + injectorDrift * 0.75) * 10) / 10;
+      const peakEgt = Math.round(745 + (throttle - 60) * 2.1 + ambientDelta * 1.4 + injectorDrift * 3.2);
+      const survivalProb = Math.max(
+        12,
+        Math.min(
+          99.4,
+          Math.round(
+            (98.5 -
+              (altitude > 20000 ? ((altitude - 20000) / 1000) * 2.2 : 0) -
+              (ambientDelta > 10 ? (ambientDelta - 10) * 1.6 : 0) -
+              (throttle > 80 ? (throttle - 80) * 1.1 : 0) -
+              injectorDrift * 1.4) *
+              10
+          ) / 10
+        )
+      );
+      const thermalMargin = Math.max(
+        0,
+        Math.min(
+          100,
+          Math.round((100 - ((peakCht / 135) * 50 + (peakEgt / 880) * 50)) * 10) / 10
+        )
+      );
+      const riskLevel = survivalProb >= 85 ? 'LOW' : survivalProb >= 65 ? 'MEDIUM' : 'HIGH';
 
-    setTimeout(() => {
+      setForecast({
+        peakCht,
+        peakEgt,
+        survivalProb,
+        thermalMargin,
+        riskLevel,
+        statusTag: 'WHAT-IF / SIMULATED RESULT',
+        timestamp: new Date().toLocaleTimeString(),
+      });
+    } finally {
       setIsRunning(false);
-    }, 200);
+    }
   };
 
   const handleReset = () => {
@@ -250,7 +277,14 @@ export default function WhatIfPage() {
           title="Projected Engine Stress & Mission Forecast"
           subtitle="Model predictions calculated across simulated flight phase"
           className="lg:col-span-2"
-          action={<RiskBadge level={forecast ? forecast.riskLevel : 'UNKNOWN'} />}
+          action={
+            <div className="flex items-center gap-2">
+              <span className="px-2 py-0.5 text-[10px] font-mono font-bold tracking-wider rounded bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                WHAT-IF / SIMULATED RESULT
+              </span>
+              <RiskBadge level={forecast ? forecast.riskLevel : 'UNKNOWN'} />
+            </div>
+          }
         >
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
             <MetricCard
@@ -285,13 +319,23 @@ export default function WhatIfPage() {
 
           <div className="p-4 rounded bg-slate-950/50 border border-dashed border-slate-800 text-center font-mono text-xs text-slate-400">
             {forecast ? (
-              <div className="space-y-1 text-slate-300">
-                <span className="text-emerald-400 font-semibold block">
-                  ✓ Scenario forecast synthesized at {forecast.timestamp}
-                </span>
+              <div className="space-y-1.5 text-slate-300">
+                <div className="flex items-center justify-center gap-2">
+                  <span className="text-emerald-400 font-semibold">
+                    ✓ Backend simulation & Digital Twin forecast synthesized at {forecast.timestamp}
+                  </span>
+                  <span className="px-1.5 py-0.2 text-[9px] font-bold rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                    WHAT-IF / SIMULATED RESULT
+                  </span>
+                </div>
                 <span className="text-slate-400 block text-[11px]">
                   Projected with Altitude {altitude.toLocaleString()} ft, Ambient ISA {ambientDelta >= 0 ? `+${ambientDelta}` : ambientDelta}°C, Throttle {throttle}%, Drift {injectorDrift}%.
                 </span>
+                {forecast.explanation && (
+                  <span className="text-sky-300/80 block text-[11px] italic mt-1">
+                    AI Assessment: {forecast.explanation}
+                  </span>
+                )}
               </div>
             ) : (
               'Awaiting scenario execution. Adjust scenario parameters and click RUN WHAT-IF FORECAST.'

@@ -5,9 +5,10 @@ export default function PageHeader({
   title,
   description,
   actions,
+  className = 'pb-4 mb-5',
 }) {
   return (
-    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 pb-4 mb-5 border-b border-slate-800/80">
+    <div className={`flex flex-col md:flex-row md:items-center md:justify-between gap-3 border-b border-slate-800/80 ${className}`}>
       <div>
         <div className="flex items-center gap-2 mb-1">
           <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-slate-800/90 text-sky-400 border border-slate-700/80 tracking-wider">

@@ -5,10 +5,12 @@ import TelemetryCard from '../components/TelemetryCard';
 import SectionCard from '../components/SectionCard';
 import HealthIndicator from '../components/HealthIndicator';
 import RiskBadge from '../components/RiskBadge';
+import EmergencyRtbAlert from '../components/EmergencyRtbAlert';
 import TelemetryStreamChart from '../charts/TelemetryStreamChart';
 import { STATUS_TYPES } from '../utils/status';
 import { useTelemetry } from '../hooks/useTelemetry';
 import { useFleet } from '../hooks/useFleet';
+import { useRtb } from '../hooks/useRtb';
 import { WS_STATUS } from '../hooks/useWebSocket';
 import {
   ShieldAlert,
@@ -37,6 +39,9 @@ export default function DashboardPage() {
     mission: defaultMission,
     history: wsHistory,
   } = useTelemetry();
+
+  // RTB-02: Live Emergency Return-to-Base (RTB) decision state for the active UAV
+  const { rtbState } = useRtb(activeUavId, activeUavState);
 
   // Local history buffer isolated per UAV
   const [uavHistory, setUavHistory] = useState({});
@@ -278,6 +283,9 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
+
+      {/* RTB-02: Compact Emergency Return-to-Base Alert (only rendered when rtb_active = true) */}
+      <EmergencyRtbAlert rtb={rtbState} />
 
       {!hasActiveUavData ? (
         <div className="bg-[#0e1628]/95 border border-sky-500/30 rounded-lg p-12 text-center my-6 flex flex-col items-center justify-center gap-3">

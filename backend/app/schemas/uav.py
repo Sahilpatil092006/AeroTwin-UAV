@@ -46,8 +46,20 @@ class UAVState:
     predicted_rul: float = 150.0
     mission_risk: str = "LOW"
     recommendation: str = "CONTINUE_MISSION"
+    mission_reliability_score: float = 100.0
+    reason_codes: List[str] = field(default_factory=list)
+    explanation: str = ""
     timestamp: Optional[str] = None
     data_mode: str = "SIMULATED"
+    # Dynamic UAV Fault Simulation attributes
+    fault_type: str = "NORMAL"
+    severity: float = 0.0
+    affected_component: str = "No affected component"
+    status: str = "HEALTHY"
+    fault_start_time: Optional[float] = None
+    fault_duration: Optional[float] = None
+    next_fault_change: Optional[float] = None
+
 
     @property
     def telemetry(self) -> Dict[str, float]:
@@ -71,11 +83,13 @@ class UAVState:
         engine_state: Any = None,
         twin_state: Any = None,
         decision: Any = None,
-        uav_id: str = "UAV-001"
+        uav_id: str = "UAV-001",
+        fault_state: Any = None
     ) -> "UAVState":
         """
         Factory method to assemble a unified UAVState from the existing
-        EngineState, DigitalTwinState, and MissionDecision components.
+        EngineState, DigitalTwinState, and MissionDecision components,
+        incorporating the UAV's active dynamic fault state.
         """
         # 1. Identity & mission defaults
         resolved_uav_id = getattr(engine_state, "uav_id", None) or getattr(twin_state, "uav_id", None) or uav_id
@@ -134,9 +148,49 @@ class UAVState:
         # 4. Mission Decision attributes
         mission_risk = "LOW"
         recommendation = "CONTINUE_MISSION"
+        mission_reliability_score = 100.0
+        reason_codes = []
+        explanation = ""
         if decision is not None:
             mission_risk = str(getattr(decision, "mission_risk", "LOW"))
             recommendation = str(getattr(decision, "mission_recommendation", "CONTINUE_MISSION"))
+            mission_reliability_score = round(float(getattr(decision, "mission_reliability_score", 100.0)), 1)
+            reason_codes = [str(rc) for rc in getattr(decision, "reason_codes", [])]
+            explanation = str(getattr(decision, "explanation", ""))
+
+        # 5. Dynamic Fault State synchronization
+        fault_type = "NORMAL"
+        severity = 0.0
+        affected_component = "No affected component"
+        status = "HEALTHY"
+        fault_start_time = None
+        fault_duration = None
+        next_fault_change = None
+
+        if fault_state is not None:
+            fault_type = str(getattr(fault_state, "fault_type", "NORMAL"))
+            severity = float(getattr(fault_state, "severity", 0.0))
+            affected_component = str(getattr(fault_state, "affected_component", "No affected component"))
+            status = str(getattr(fault_state, "status", "HEALTHY"))
+            fault_start_time = getattr(fault_state, "fault_start_time", None)
+            fault_duration = getattr(fault_state, "fault_duration", None)
+            next_fault_change = getattr(fault_state, "next_fault_change", None)
+
+            # Ensure AI fault reflects active dynamic simulation state
+            if fault_type != "NORMAL":
+                predicted_fault = fault_type
+                if fault_confidence < 0.60:
+                    fault_confidence = 0.92
+                if fault_type == "SENSOR_ANOMALY":
+                    anomaly_status = "WARNING"
+                else:
+                    anomaly_status = "ANOMALOUS"
+            else:
+                predicted_fault = "NORMAL"
+                anomaly_status = "NORMAL"
+                status = "HEALTHY"
+                affected_component = "No affected component"
+                severity = 0.0
 
         return cls(
             uav_id=resolved_uav_id,
@@ -152,7 +206,17 @@ class UAVState:
             predicted_rul=predicted_rul,
             mission_risk=mission_risk,
             recommendation=recommendation,
-            timestamp=timestamp
+            mission_reliability_score=mission_reliability_score,
+            reason_codes=reason_codes,
+            explanation=explanation,
+            timestamp=timestamp,
+            fault_type=fault_type,
+            severity=severity,
+            affected_component=affected_component,
+            status=status,
+            fault_start_time=fault_start_time,
+            fault_duration=fault_duration,
+            next_fault_change=next_fault_change
         )
 
 
@@ -176,8 +240,20 @@ class UAVStateResponse(BaseModel):
     predicted_rul: float = Field(default=150.0, ge=0.0, description="Predicted Remaining Useful Life (hours)")
     mission_risk: str = Field(default="LOW", description="Mission risk assessment (LOW / MEDIUM / HIGH)")
     recommendation: str = Field(default="CONTINUE_MISSION", description="Decision-support recommendation")
+    mission_reliability_score: float = Field(default=100.0, ge=0.0, le=100.0, description="Mission reliability score (0-100)")
+    reason_codes: List[str] = Field(default_factory=list, description="Active decision and hazard reason codes")
+    explanation: str = Field(default="", description="Human-readable decision explanation")
     timestamp: Optional[str] = Field(default=None, description="Timestamp of telemetry snapshot")
     data_mode: str = Field(default="SIMULATED", description="Identifies data as simulated telemetry")
+    # Dynamic UAV Fault Simulation attributes
+    fault_type: str = Field(default="NORMAL", description="Current simulated engine fault type")
+    severity: float = Field(default=0.0, ge=0.0, le=1.0, description="Active fault severity level")
+    affected_component: str = Field(default="No affected component", description="Component affected by active fault")
+    status: str = Field(default="HEALTHY", description="Engine subsystem health status")
+    fault_start_time: Optional[float] = Field(default=None, description="Timestamp when current fault started")
+    fault_duration: Optional[float] = Field(default=None, description="Duration in seconds of current fault window")
+    next_fault_change: Optional[float] = Field(default=None, description="Timestamp when next fault transition occurs")
+
 
 
 class FleetStateResponse(BaseModel):

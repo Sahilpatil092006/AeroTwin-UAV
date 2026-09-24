@@ -16,6 +16,10 @@
     --color-status-critical: #ef4444;
   }
 
+  html {
+    scroll-behavior: smooth;
+  }
+
   body {
     background-color: #090d16;
     color: #e2e8f0;

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import PageHeader from '../components/PageHeader';
 import SectionCard from '../components/SectionCard';
 import MetricCard from '../components/MetricCard';
@@ -49,6 +49,14 @@ export default function DigitalTwinPage() {
   const [activeTab, setActiveTab] = useState('3D VIEW');
   const [selectedPartId, setSelectedPartId] = useState(null);
   const [selectedCylinder, setSelectedCylinder] = useState('CYLINDER 1');
+
+  // ── Reset 3D visualization state whenever the active UAV changes ──────────────────
+  // This ensures no stale fault highlight / selected-part from a previous UAV
+  // bleeds into the newly selected UAV's 3D view.
+  useEffect(() => {
+    setSelectedPartId(null);
+    setSelectedCylinder('CYLINDER 1');
+  }, [activeUavId]);
 
   // Single Source of Truth: Active UAV State
   const isFleetLive = Boolean(activeUavState);
@@ -131,13 +139,17 @@ export default function DigitalTwinPage() {
   };
 
   // 3. Synchronized AI & Fault State
-  const activeFault = activeUavState?.predicted_fault || (activeUavId === 'UAV-001' ? defaultAi?.predicted_fault : 'NORMAL') || 'NORMAL';
+  const activeFault = activeUavState?.fault_type || activeUavState?.predicted_fault || (activeUavId === 'UAV-001' ? defaultAi?.predicted_fault : 'NORMAL') || 'NORMAL';
   const rawConf = activeUavState?.fault_confidence !== undefined
     ? Number(activeUavState.fault_confidence)
     : (activeUavId === 'UAV-001' && defaultAi?.confidence !== undefined ? Number(defaultAi.confidence) : 0.9);
 
   const activeAi = {
+    fault_type: activeFault,
     predicted_fault: activeFault,
+    severity: activeUavState?.severity || (activeFault === 'NORMAL' ? 'NOMINAL' : 'MEDIUM'),
+    affected_component: activeUavState?.affected_component || null,
+    status: activeUavState?.status || (activeFault === 'NORMAL' ? 'NORMAL' : 'FAULT'),
     confidence: rawConf,
     anomaly_status: (activeUavState?.anomaly_status || (activeUavId === 'UAV-001' ? defaultAi?.anomaly_status : 'NORMAL') || 'NORMAL').toUpperCase(),
     anomaly_score: activeUavState?.anomaly_score !== undefined
@@ -456,6 +468,7 @@ export default function DigitalTwinPage() {
                 digitalTwin={activeDigitalTwin}
                 ai={activeAi}
                 isConnected={isConnected}
+                uavId={activeUavId}
                 height={540}
               />
             </SectionCard>
@@ -475,6 +488,7 @@ export default function DigitalTwinPage() {
                 telemetry={activeTelemetry}
                 digitalTwin={activeDigitalTwin}
                 isConnected={isConnected}
+                uavId={activeUavId}
                 height={540}
               />
             </SectionCard>
@@ -496,6 +510,7 @@ export default function DigitalTwinPage() {
               onSelectPart={setSelectedPartId}
               telemetry={activeTelemetry}
               digitalTwin={activeDigitalTwin}
+              ai={activeAi}
               isConnected={isConnected}
             />
           )}

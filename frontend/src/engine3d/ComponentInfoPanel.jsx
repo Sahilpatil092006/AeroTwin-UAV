@@ -9,23 +9,32 @@ import {
   ChevronRight,
   Info
 } from 'lucide-react';
-import { ENGINE_PARTS, getComponentStatus } from './enginePartsData';
+import { ENGINE_PARTS, getComponentStatus, getActiveFaultedPartId } from './enginePartsData';
 
 export default function ComponentInfoPanel({
   selectedPartId,
   onSelectPart,
   telemetry = {},
   digitalTwin = {},
+  ai = {},
   isConnected = false,
 }) {
   const tel = telemetry || {};
   const dt = digitalTwin || {};
-  const selectedPart =
-    ENGINE_PARTS.find((p) => p.id === selectedPartId) || ENGINE_PARTS[0];
 
-  const status = getComponentStatus(selectedPart, tel, dt);
+  // Resolve the part to display:
+  // 1. User-selected part (highest priority)
+  // 2. AI-affected fault part (auto-highlight the relevant subsystem)
+  // 3. null — show NORMAL engine state, NOT cylinder_head by default
+  const affectedPartId = getActiveFaultedPartId(ai, dt);
+  const resolvedPartId = selectedPartId || affectedPartId || null;
+  const selectedPart = resolvedPartId
+    ? ENGINE_PARTS.find((p) => p.id === resolvedPartId) || null
+    : null;
+
+  const status = selectedPart ? getComponentStatus(selectedPart, tel, dt, ai) : 'HEALTHY';
   const liveVal =
-    isConnected && tel[selectedPart.telemetryKey] !== undefined
+    isConnected && selectedPart && tel[selectedPart.telemetryKey] !== undefined
       ? Number(tel[selectedPart.telemetryKey]).toFixed(1)
       : '--';
 
@@ -47,6 +56,7 @@ export default function ComponentInfoPanel({
   let percentage = 50;
   if (
     isConnected &&
+    selectedPart &&
     tel[selectedPart.telemetryKey] !== undefined &&
     selectedPart.nominalMin &&
     selectedPart.nominalMax
@@ -55,6 +65,70 @@ export default function ComponentInfoPanel({
     const min = selectedPart.nominalMin;
     const max = selectedPart.warningMax || selectedPart.nominalMax * 1.15;
     percentage = Math.max(5, Math.min(100, ((raw - min) / (max - min)) * 100));
+  }
+
+  // ── NORMAL / no-fault state ───────────────────────────────────────────────────────────
+  // When no part is selected and there's no active fault, show a clean state
+  // instead of defaulting to cylinder_head.
+  if (!selectedPart) {
+    return (
+      <div className="rounded-lg bg-slate-900/90 border border-slate-800 p-5 shadow-xl font-mono text-xs select-none">
+        <div className="flex flex-wrap items-center justify-between gap-2 pb-3 mb-4 border-b border-slate-800/80">
+          <div className="flex items-center gap-2">
+            <Layers className="w-4 h-4 text-sky-400" />
+            <span className="text-slate-400 font-bold tracking-wider uppercase text-[11px]">
+              COMPONENT INFORMATION &amp; DIAGNOSTICS
+            </span>
+          </div>
+          <div
+            className="px-2.5 py-1 rounded border flex items-center gap-1.5 font-bold shadow-md bg-emerald-950/80 border-emerald-600/70 text-emerald-300"
+            style={{ boxShadow: 'rgba(16, 185, 129, 0.2)' }}
+          >
+            <ShieldCheck className="w-3.5 h-3.5" />
+            <span>STATUS: HEALTHY</span>
+          </div>
+        </div>
+        <div className="p-6 rounded bg-slate-950/60 border border-slate-800 text-center">
+          <ShieldCheck className="w-8 h-8 text-emerald-400 mx-auto mb-3" />
+          <div className="text-emerald-400 font-bold text-sm mb-1">ENGINE NORMAL</div>
+          <div className="text-slate-400 text-[11px] leading-relaxed">
+            No active fault detected for this UAV.
+            All monitored components are operating within nominal aero engine parameters.
+          </div>
+          <div className="text-[10px] text-slate-500 mt-3">
+            Click any component in the 3D view or select from the part list below to inspect it.
+          </div>
+        </div>
+        {/* Quick Component Selection Strip (still useful for manual inspection) */}
+        <div className="mt-4 pt-3 border-t border-slate-800/80">
+          <span className="text-[10px] text-slate-500 block mb-2 font-bold uppercase tracking-wider">
+            FAST COMPONENT SELECTOR (20 CRITICAL PARTS):
+          </span>
+          <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto pr-1">
+            {ENGINE_PARTS.map((part) => {
+              const pStatus = getComponentStatus(part, telemetry, digitalTwin, ai);
+              const dotColor =
+                pStatus === 'CRITICAL'
+                  ? 'bg-rose-500'
+                  : pStatus === 'WARNING'
+                  ? 'bg-amber-500'
+                  : 'bg-emerald-500';
+              return (
+                <button
+                  key={part.id}
+                  type="button"
+                  onClick={() => onSelectPart(part.id)}
+                  className="px-2 py-1 rounded text-[10px] border flex items-center gap-1.5 bg-slate-950/70 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700 transition-all"
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
+                  <span>{part.name}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -173,8 +247,8 @@ export default function ComponentInfoPanel({
         </span>
         <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto pr-1">
           {ENGINE_PARTS.map((part) => {
-            const isSelected = part.id === selectedPartId;
-            const pStatus = getComponentStatus(part, telemetry, digitalTwin);
+            const isSelected = part.id === resolvedPartId;
+            const pStatus = getComponentStatus(part, telemetry, digitalTwin, ai);
             const dotColor =
               pStatus === 'CRITICAL'
                 ? 'bg-rose-500'

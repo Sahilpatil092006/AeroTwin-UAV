@@ -20,6 +20,8 @@ from backend.app.schemas.schemas import (
     RULResponse,
     AIExplanationResponse,
     MissionRiskResponse,
+    WhatIfRequest,
+    WhatIfResponse,
     UAVState,
     UAVStateResponse,
     FleetStateResponse
@@ -41,7 +43,10 @@ __all__ = [
     "RULResponse",
     "AIExplanationResponse",
     "MissionRiskResponse",
+    "WhatIfRequest",
+    "WhatIfResponse",
     "UAVState",
     "UAVStateResponse",
     "FleetStateResponse"
 ]
+

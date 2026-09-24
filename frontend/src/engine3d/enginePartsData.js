@@ -539,37 +539,85 @@ export const ENGINE_PARTS = [
     explodedOffset: [0, -0.9, -1.8],
     schematicPos: { x: 490, y: 220 },
   },
+  {
+    id: 'sensor_telemetry',
+    name: 'Telemetry Sensor',
+    category: 'Avionics & Sensors',
+    isMajor: false,
+    function: 'Integrated engine sensor transducers monitoring CHT, EGT, oil circuit pressure, and vibration signals.',
+    telemetryKey: 'cht',
+    telemetryLabel: 'Sensor Telemetry',
+    unit: '°C',
+    nominalMin: 80,
+    nominalMax: 135,
+    warningMax: 150,
+    normalRange: 'Calibrated Signal Range',
+    color: '#38bdf8',
+    anchor3D: [0, 0.45, -0.6],
+    labelPos3D: [-0.65, 0.75, -0.6],
+    explodedOffset: [0, 0.6, -0.6],
+    schematicPos: { x: 350, y: 150 },
+  },
 ];
 
 /**
- * Fault mapping definitions for virtual engine AI fault classes
- * Each AI fault maps exclusively to its responsible primary component.
+ * Fault mapping definitions for virtual engine AI fault classes.
+ * Maps each fault class to:
+ * - target: 3D part ID to highlight
+ * - componentName: Full component name shown in popup header
+ * - leaderLabel: Leader line label attached to engine
+ * - label: Popup title / fault text
+ * - status: 'FAULT' | 'WARNING' | 'HEALTHY'
+ * - explanation: Diagnostic explanation
  */
 export const FAULT_TARGET_PARTS = {
-  INJECTOR_ABNORMALITY: {
-    target: 'fuel_injector',
-    label: 'Injector Abnormality',
-    explanation: 'AI detected fuel delivery imbalance or injection timing anomaly on fuel injectors.',
+  NORMAL: {
+    target: null,
+    componentName: 'No affected component',
+    leaderLabel: 'Engine Normal',
+    label: 'No active engine fault',
+    status: 'HEALTHY',
+    explanation: 'All monitored components are operating within nominal aero engine parameters.',
+  },
+  SENSOR_ANOMALY: {
+    target: 'sensor_telemetry',
+    componentName: 'Telemetry Sensor',
+    leaderLabel: 'Sensor / Telemetry',
+    label: 'Sensor / Telemetry Anomaly',
+    status: 'WARNING',
+    explanation: 'Telemetry sensor channel exhibits statistical anomaly and residual deviation from physics digital twin model.',
   },
   COOLING_PROBLEM: {
     target: 'cylinder_head',
+    componentName: 'Cylinder Heads / Cooling Fins',
+    leaderLabel: 'Cylinder Heads / Cooling Fins',
     label: 'Cooling System Degradation',
+    status: 'FAULT',
     explanation: 'AI identified thermal dissipation deficit; elevated Cylinder Head Temperature (CHT) exceeds thermodynamic baseline.',
   },
   LUBRICATION_PROBLEM: {
     target: 'oil_sump',
-    label: 'Lubrication System Fault',
+    componentName: 'Oil Pump / Oil Sump',
+    leaderLabel: 'Oil Pump / Oil Filter / Oil Sump',
+    label: 'Lubrication Problem',
+    status: 'FAULT',
     explanation: 'AI detected oil pressure degradation or lubrication circuit breakdown, risking hydrodynamic film collapse.',
   },
   MISFIRE: {
     target: 'spark_plug',
-    label: 'Cylinder Misfire',
-    explanation: 'AI detected combustion ignition failure or intermittent spark firing causing rotational speed and vibration anomalies.',
+    componentName: 'Spark Plug / Cylinder 2',
+    leaderLabel: 'Spark Plug / affected Cylinder',
+    label: 'Misfire Detected',
+    status: 'FAULT',
+    explanation: 'AI detected combustion misfire causing rotational speed drop and elevated torsional vibration.',
   },
-  SENSOR_ANOMALY: {
-    target: null, // dynamically resolved via deviating telemetry key
-    label: 'Sensor Drift / Anomaly',
-    explanation: 'Telemetry channel exhibits statistical anomaly and residual deviation from physics digital twin model.',
+  INJECTOR_ABNORMALITY: {
+    target: 'fuel_injector',
+    componentName: 'Fuel Injector',
+    leaderLabel: 'Fuel Injector / Intake System',
+    label: 'Fuel Injector Abnormality',
+    status: 'FAULT',
+    explanation: 'AI detected fuel delivery imbalance or injection timing anomaly on fuel injectors.',
   },
 };
 
@@ -581,36 +629,22 @@ export function getActiveFaultedPartId(ai = {}, digitalTwin = {}) {
   const faultClass =
     (ai?.fault_detected && ai?.fault_class && ai.fault_class !== 'NORMAL')
       ? ai.fault_class
+      : (ai?.fault_type && ai.fault_type !== 'NORMAL')
+      ? ai.fault_type
       : (ai?.predicted_fault && ai.predicted_fault !== 'NORMAL')
       ? ai.predicted_fault
       : null;
 
   if (faultClass && FAULT_TARGET_PARTS[faultClass]) {
-    if (faultClass === 'SENSOR_ANOMALY') {
-      const deviations = digitalTwin?.deviations || {};
-      for (const [key, dev] of Object.entries(deviations)) {
-        if (dev?.status === 'CRITICAL' || dev?.status === 'WARNING') {
-          if (key === 'cht') return 'cylinder_head';
-          if (key === 'egt') return 'exhaust_manifold';
-          if (key === 'oil_pressure' || key === 'oil_temperature') return 'oil_sump';
-          if (key === 'vibration') return 'crankshaft';
-          if (key === 'fuel_flow') return 'fuel_injector';
-          if (key === 'rpm') return 'propeller';
-          if (key === 'manifold_pressure') return 'turbocharger';
-        }
-      }
-      return 'cylinder_head';
-    }
-    const target = FAULT_TARGET_PARTS[faultClass].target;
-    if (target) return target;
+    return FAULT_TARGET_PARTS[faultClass].target;
   }
 
-  // Check if AI anomaly is flagged without a specific fault class
+  // Check if AI anomaly is flagged without a specific fault class.
   const isAnomalous = ai?.anomaly_status === 'ANOMALOUS' || ai?.anomaly_detected === true;
   if (isAnomalous) {
     const deviations = digitalTwin?.deviations || {};
     for (const [key, dev] of Object.entries(deviations)) {
-      if (dev?.status === 'CRITICAL' || dev?.status === 'WARNING') {
+      if (dev?.status === 'CRITICAL') {
         if (key === 'cht') return 'cylinder_head';
         if (key === 'egt') return 'exhaust_manifold';
         if (key === 'oil_pressure' || key === 'oil_temperature') return 'oil_sump';
@@ -624,6 +658,7 @@ export function getActiveFaultedPartId(ai = {}, digitalTwin = {}) {
 
   return null;
 }
+
 
 /**
  * Computes detailed component fault diagnostics given live telemetry, digital twin & AI state.
@@ -684,22 +719,22 @@ export function getComponentFaultDetails(part, telemetry = {}, digitalTwin = {},
     const faultClass =
       (ai?.fault_detected && ai?.fault_class && ai.fault_class !== 'NORMAL')
         ? ai.fault_class
+        : (ai?.fault_type && ai.fault_type !== 'NORMAL')
+        ? ai.fault_type
         : (ai?.predicted_fault && ai.predicted_fault !== 'NORMAL')
         ? ai.predicted_fault
         : null;
 
-    const isHardFault =
-      Boolean(faultClass) ||
-      ai?.fault_detected === true ||
-      digitalTwin?.overall_status === 'CRITICAL' ||
-      dev?.status === 'CRITICAL';
-
     const faultDef = faultClass && FAULT_TARGET_PARTS[faultClass] ? FAULT_TARGET_PARTS[faultClass] : null;
+    const isWarning = faultClass === 'SENSOR_ANOMALY' || faultDef?.status === 'WARNING';
+    const isHardFault = !isWarning && faultClass !== 'NORMAL';
 
     return {
       status: isHardFault ? 'FAULT' : 'WARNING',
       faultType: faultClass || (isHardFault ? 'CRITICAL_FAULT' : 'ANOMALY'),
       faultLabel: faultDef ? faultDef.label : (isHardFault ? `${partName} Fault` : `${partName} Anomaly`),
+      componentName: faultDef?.componentName || partName,
+      leaderLabel: faultDef?.leaderLabel || partName,
       telemetryLabel,
       liveValue: liveValFormatted,
       expectedValue: expectedValFormatted,
@@ -715,7 +750,9 @@ export function getComponentFaultDetails(part, telemetry = {}, digitalTwin = {},
   return {
     status: 'NORMAL',
     faultType: 'NORMAL',
-    faultLabel: 'Normal Operation',
+    faultLabel: 'No active engine fault',
+    componentName: partName,
+    leaderLabel: partName,
     telemetryLabel,
     liveValue: liveValFormatted,
     expectedValue: expectedValFormatted,
@@ -723,6 +760,7 @@ export function getComponentFaultDetails(part, telemetry = {}, digitalTwin = {},
     explanation: part.function || `${partName} functioning within nominal aero engine parameters.`,
     isPulsing: false,
   };
+
 }
 
 /**

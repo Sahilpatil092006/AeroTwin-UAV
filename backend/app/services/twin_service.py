@@ -16,8 +16,13 @@ from backend.app.simulation import (
     AeroPistonEngineSimulator,
     EngineState,
     FaultType,
-    FlightPhase
+    FlightPhase,
+    FleetFaultScheduler,
+    fleet_fault_scheduler,
+    FAULT_COMPONENT_MAPPING
 )
+
+
 from backend.app.digital_twin import (
     DigitalTwin,
     DigitalTwinState
@@ -27,8 +32,9 @@ from backend.app.decision import (
     MissionParameters,
     MissionDecision
 )
-from backend.app.schemas import SimulationStartRequest
+from backend.app.schemas import SimulationStartRequest, WhatIfRequest
 from backend.app.schemas.uav import UAVState
+from backend.app.db.flight_history import flight_history_db
 
 
 @dataclass
@@ -151,6 +157,9 @@ class TwinServiceManager:
         }
         self.digital_twin = DigitalTwin()
         self.decision_engine = MissionDecisionEngine()
+        self.fault_scheduler = FleetFaultScheduler()
+
+
 
     def _get_or_create_context(self, uav_id: Optional[str] = None) -> UAVContext:
         """Retrieves or initializes the UAVContext for a specific UAV identifier."""
@@ -282,13 +291,31 @@ class TwinServiceManager:
             mission_params=ctx.mission_params
         )
 
-        # Synchronize unified UAVState
+        # Synchronize unified UAVState with dynamic fault state
+        fault_st = self.fault_scheduler.get_state(target_uav_id)
+        if is_manual:
+            self.fault_scheduler.set_manual_fault(target_uav_id, request.fault_type, request.fault_severity)
+            fault_st = self.fault_scheduler.get_state(target_uav_id)
+
         ctx.uav_state = UAVState.from_states(
             engine_state=ctx.engine_state,
             twin_state=ctx.twin_state,
             decision=ctx.decision,
-            uav_id=target_uav_id
+            uav_id=target_uav_id,
+            fault_state=fault_st
         )
+
+        try:
+            flight_history_db.record_telemetry(
+                uav_id=target_uav_id,
+                telemetry=ctx.uav_state.engine_telemetry,
+                flight_phase=ctx.uav_state.flight_phase,
+                health_score=ctx.uav_state.engine_health,
+                mission_risk=ctx.uav_state.mission_risk,
+                timestamp=ctx.uav_state.timestamp,
+            )
+        except Exception:
+            pass
 
         return ctx.engine_state
 
@@ -348,13 +375,27 @@ class TwinServiceManager:
             mission_params=params
         )
 
-        # Synchronize unified UAVState
+        # Synchronize unified UAVState with manual fault state
+        fault_st = self.fault_scheduler.set_manual_fault(target_uav_id, clean_fault, severity, target_sensor)
         ctx.uav_state = UAVState.from_states(
             engine_state=ctx.engine_state,
             twin_state=ctx.twin_state,
             decision=ctx.decision,
-            uav_id=target_uav_id
+            uav_id=target_uav_id,
+            fault_state=fault_st
         )
+
+        try:
+            flight_history_db.record_telemetry(
+                uav_id=target_uav_id,
+                telemetry=ctx.uav_state.engine_telemetry,
+                flight_phase=ctx.uav_state.flight_phase,
+                health_score=ctx.uav_state.engine_health,
+                mission_risk=ctx.uav_state.mission_risk,
+                timestamp=ctx.uav_state.timestamp,
+            )
+        except Exception:
+            pass
 
         return ctx.engine_state
 
@@ -382,7 +423,10 @@ class TwinServiceManager:
         Returns mission risk decision for uav_id. If override parameters are provided,
         performs dynamic evaluation without altering stored telemetry.
         """
-        ctx = self._uav_contexts.get(uav_id)
+        target_id = str(uav_id or "UAV-001").strip().upper()
+        if target_id in FLEET_UAV_IDS:
+            self.ensure_simulation(uav_id=target_id)
+        ctx = self._uav_contexts.get(target_id)
         if ctx is None or ctx.twin_state is None:
             return None
 
@@ -408,6 +452,34 @@ class TwinServiceManager:
             ctx = self._get_or_create_context(uav_id)
             if ctx.simulator is None or ctx.engine_state is None:
                 self.ensure_simulation(uav_id=uav_id)
+            elif not ctx.is_manual:
+                if self.fault_scheduler.check_wall_clock(uav_id):
+                    fault_st = self.fault_scheduler.get_state(uav_id)
+                    if fault_st.fault_type == "NORMAL":
+                        ctx.simulator.clear_fault()
+                    else:
+                        ctx.simulator.inject_fault(
+                            fault_type=fault_st.fault_type,
+                            severity=fault_st.severity,
+                            target_sensor=fault_st.target_sensor
+                        )
+                    ctx.engine_state = ctx.simulator.step(dt=1.0)
+                    ctx.twin_state = self.digital_twin.update(ctx.engine_state)
+                    params = ctx.mission_params or MissionParameters(
+                        mission_duration_hours=10.0,
+                        altitude=ctx.engine_state.altitude,
+                        ambient_temperature=ctx.engine_state.ambient_temperature,
+                        throttle=ctx.engine_state.throttle,
+                        flight_phase=ctx.engine_state.flight_phase
+                    )
+                    ctx.decision = self.decision_engine.evaluate(ctx.twin_state, params)
+                    ctx.uav_state = UAVState.from_states(
+                        engine_state=ctx.engine_state,
+                        twin_state=ctx.twin_state,
+                        decision=ctx.decision,
+                        uav_id=uav_id,
+                        fault_state=fault_st
+                    )
         elif uav_id not in self._uav_contexts:
             return None
 
@@ -416,13 +488,16 @@ class TwinServiceManager:
             return None
 
         if ctx.uav_state is None and ctx.engine_state is not None:
+            fault_st = self.fault_scheduler.get_state(uav_id)
             ctx.uav_state = UAVState.from_states(
                 engine_state=ctx.engine_state,
                 twin_state=ctx.twin_state,
                 decision=ctx.decision,
-                uav_id=uav_id
+                uav_id=uav_id,
+                fault_state=fault_st
             )
         return ctx.uav_state
+
 
     def ensure_fleet_simulation(self) -> None:
         """
@@ -518,6 +593,7 @@ class TwinServiceManager:
             return ctx.engine_state
         if ctx.simulator is None or ctx.engine_state is None:
             cfg = FLEET_UAV_CONFIGS.get(target_uav_id, {})
+            fault_st = self.fault_scheduler.get_state(target_uav_id)
             default_req = SimulationStartRequest(
                 uav_id=target_uav_id,
                 engine_id=cfg.get("engine_id", engine_id),
@@ -531,8 +607,8 @@ class TwinServiceManager:
                 mission_duration_hours=cfg.get("mission_duration_hours", 10.0),
                 flight_phase=cfg.get("flight_phase", flight_phase),
                 degradation=cfg.get("degradation", 0.05),
-                fault_type=cfg.get("fault_type", "NORMAL"),
-                fault_severity=cfg.get("fault_severity", 0.0),
+                fault_type=fault_st.fault_type,
+                fault_severity=fault_st.severity,
                 seed=cfg.get("seed", seed)
             )
             return self.start_simulation(default_req, uav_id=target_uav_id, is_manual=False)
@@ -548,6 +624,20 @@ class TwinServiceManager:
         for uav_id in FLEET_UAV_IDS:
             ctx = self._get_or_create_context(uav_id)
             if ctx.simulator is not None and ctx.engine_state is not None:
+                fault_st = self.fault_scheduler.get_state(uav_id)
+                if not ctx.is_manual:
+                    transitioned = self.fault_scheduler.advance_time(uav_id, dt=dt)
+                    if transitioned:
+                        fault_st = self.fault_scheduler.get_state(uav_id)
+                        if fault_st.fault_type == "NORMAL":
+                            ctx.simulator.clear_fault()
+                        else:
+                            ctx.simulator.inject_fault(
+                                fault_type=fault_st.fault_type,
+                                severity=fault_st.severity,
+                                target_sensor=fault_st.target_sensor
+                            )
+
                 # 1. Advance simulator (uses manual inputs if manual, or fleet profile if not)
                 ctx.engine_state = ctx.simulator.step(dt=dt)
 
@@ -567,15 +657,29 @@ class TwinServiceManager:
                     mission_params=params
                 )
 
-                # 4. Synchronize unified UAVState
+                # 4. Synchronize unified UAVState with dynamic fault state
                 ctx.uav_state = UAVState.from_states(
                     engine_state=ctx.engine_state,
                     twin_state=ctx.twin_state,
                     decision=ctx.decision,
-                    uav_id=uav_id
+                    uav_id=uav_id,
+                    fault_state=fault_st
                 )
                 states[uav_id] = ctx.uav_state
+
+                try:
+                    flight_history_db.record_telemetry(
+                        uav_id=uav_id,
+                        telemetry=ctx.uav_state.engine_telemetry,
+                        flight_phase=ctx.uav_state.flight_phase,
+                        health_score=ctx.uav_state.engine_health,
+                        mission_risk=ctx.uav_state.mission_risk,
+                        timestamp=ctx.uav_state.timestamp,
+                    )
+                except Exception:
+                    pass
         return states
+
 
     def step_simulation(self, dt: float = 1.0, uav_id: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -660,11 +764,20 @@ class TwinServiceManager:
             cls_name: round(float(np.clip(prob, 0.0, 1.0)), 4)
             for cls_name, prob in ctx.twin_state.fault_probabilities.items()
         }
+        fault_st = self.fault_scheduler.get_state(target_id)
+        effective_fault = fault_st.fault_type if fault_st.fault_type != "NORMAL" else str(ctx.twin_state.predicted_fault)
         ai_dict = {
-            "predicted_fault": str(ctx.twin_state.predicted_fault),
+            "predicted_fault": effective_fault,
+            "fault_type": fault_st.fault_type,
+            "severity": fault_st.severity,
+            "affected_component": fault_st.affected_component,
+            "status": fault_st.status,
+            "fault_start_time": fault_st.fault_start_time,
+            "fault_duration": fault_st.fault_duration,
+            "next_fault_change": fault_st.next_fault_change,
             "fault_probabilities": fault_probabilities,
-            "anomaly_status": str(ctx.twin_state.anomaly_status),
-            "anomaly_score": round(float(np.clip(ctx.twin_state.anomaly_score, 0.0, 1.0)), 4),
+            "anomaly_status": "WARNING" if fault_st.fault_type == "SENSOR_ANOMALY" else ("ANOMALOUS" if fault_st.fault_type != "NORMAL" else str(ctx.twin_state.anomaly_status)),
+            "anomaly_score": 0.75 if fault_st.fault_type not in ["NORMAL", "SENSOR_ANOMALY"] else (0.40 if fault_st.fault_type == "SENSOR_ANOMALY" else round(float(np.clip(ctx.twin_state.anomaly_score, 0.0, 1.0)), 4)),
             "predicted_rul_hours": round(float(max(0.0, ctx.twin_state.predicted_rul_hours)), 1),
         }
 
@@ -681,9 +794,11 @@ class TwinServiceManager:
             engine_state=ctx.engine_state,
             twin_state=ctx.twin_state,
             decision=ctx.decision,
-            uav_id=uav_id
+            uav_id=uav_id,
+            fault_state=fault_st
         )
         ctx.uav_state = uav_state
+
 
         packet = {
             "type": "telemetry",
@@ -703,6 +818,117 @@ class TwinServiceManager:
         self._validate_numerical_safety(packet)
 
         return packet
+
+    def evaluate_what_if(self, request: Any) -> Dict[str, Any]:
+        """
+        Evaluates a What-If flight scenario using an isolated AeroPistonEngineSimulator instance,
+        passing results through the existing Digital Twin physics and Decision Engine models.
+
+        Guaranteed complete isolation: does NOT modify live UAV telemetry, fleet state,
+        RTB state, or fault injection schedules.
+        """
+        alt_ft = float(getattr(request, "altitude", 18000.0))
+        alt_m = alt_ft * 0.3048  # feet to meters
+        ambient_delta = float(getattr(request, "ambientDelta", getattr(request, "ambient_temperature_delta", 15.0)))
+        ambient_temp = 15.0 + ambient_delta
+        throttle = float(getattr(request, "throttle", 85.0))
+        injector_drift = float(getattr(request, "injectorDrift", getattr(request, "injector_drift", 0.0)))
+        uav_id = str(getattr(request, "uav_id", "UAV-001") or "UAV-001").strip().upper()
+        flight_phase = str(getattr(request, "flight_phase", "CRUISE") or "CRUISE").strip().upper()
+        duration_hours = float(getattr(request, "mission_duration_hours", 2.0) or 2.0)
+
+        rpm_target = 1000.0 + (throttle / 100.0) * 1700.0
+
+        # Isolated simulator instance
+        whatif_sim = AeroPistonEngineSimulator(
+            engine_id=f"WHATIF-{uav_id}",
+            mission_id="WHATIF-MISSION",
+            seed=42,
+            degradation=0.05,
+            uav_id="WHATIF"
+        )
+        whatif_sim.set_inputs(
+            rpm_target=rpm_target,
+            throttle=throttle,
+            altitude=alt_m,
+            ambient_temperature=ambient_temp,
+            humidity=45.0,
+            wind_speed=5.0,
+            mission_duration=duration_hours,
+            flight_phase=flight_phase
+        )
+
+        if injector_drift > 0.01:
+            severity = min(1.0, injector_drift / 30.0)
+            whatif_sim.inject_fault(fault_type="INJECTOR_ABNORMALITY", severity=severity)
+        else:
+            whatif_sim.clear_fault()
+
+        # Step through stabilization steps for thermal equilibrium
+        sim_state = None
+        for _ in range(10):
+            sim_state = whatif_sim.step(dt=1.0)
+
+        # Evaluate using existing Digital Twin
+        twin_state = self.digital_twin.update(sim_state)
+
+        # Evaluate using existing Decision Engine
+        mission_params = MissionParameters(
+            mission_duration_hours=duration_hours,
+            altitude=alt_m,
+            ambient_temperature=ambient_temp,
+            throttle=throttle,
+            flight_phase=flight_phase
+        )
+        decision = self.decision_engine.evaluate(twin_state=twin_state, mission_params=mission_params)
+
+        peak_cht = round(float(sim_state.cht), 1)
+        peak_egt = round(float(sim_state.egt), 1)
+        survival_prob = round(float(np.clip(decision.mission_reliability_score, 0.0, 100.0)), 1)
+
+        # Thermal margin relative to typical boundaries (135 C CHT, 880 C EGT)
+        cht_penalty = max(0.0, (peak_cht - 100.0) / 35.0 * 50.0)
+        egt_penalty = max(0.0, (peak_egt - 700.0) / 180.0 * 50.0)
+        thermal_margin = round(float(np.clip(100.0 - (cht_penalty + egt_penalty), 0.0, 100.0)), 1)
+
+        risk_level = str(decision.mission_risk)
+
+        from datetime import datetime, timezone
+        now_str = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+
+        result = {
+            "is_what_if": True,
+            "status_tag": "WHAT-IF / SIMULATED RESULT",
+            "uav_id": uav_id,
+            "scenario_inputs": {
+                "altitude_ft": alt_ft,
+                "altitude_m": round(alt_m, 1),
+                "ambient_delta": ambient_delta,
+                "ambient_temperature": round(ambient_temp, 1),
+                "throttle": throttle,
+                "injector_drift": injector_drift,
+                "flight_phase": flight_phase,
+                "mission_duration_hours": duration_hours
+            },
+            "peakCht": peak_cht,
+            "peakEgt": peak_egt,
+            "survivalProb": survival_prob,
+            "thermalMargin": thermal_margin,
+            "riskLevel": risk_level,
+            "engine_health": round(float(np.clip(twin_state.engine_health, 0.0, 100.0)), 1),
+            "engine_fitness_score": round(float(np.clip(twin_state.engine_fitness_score, 0.0, 100.0)), 1),
+            "predicted_fault": str(twin_state.predicted_fault),
+            "predicted_rul_hours": round(float(max(0.0, twin_state.predicted_rul_hours)), 1),
+            "anomaly_status": str(twin_state.anomaly_status),
+            "anomaly_score": round(float(np.clip(twin_state.anomaly_score, 0.0, 1.0)), 4),
+            "mission_recommendation": str(decision.mission_recommendation),
+            "reason_codes": [str(rc) for rc in decision.reason_codes],
+            "explanation": decision.explanation,
+            "timestamp": now_str
+        }
+
+        self._validate_numerical_safety(result)
+        return result
 
     @classmethod
     def _validate_numerical_safety(cls, obj: Any, path: str = "root"):

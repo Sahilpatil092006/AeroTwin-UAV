@@ -31,6 +31,13 @@ from backend.app.simulation.faults import (
 from backend.app.simulation.engine import (
     AeroPistonEngineSimulator
 )
+from backend.app.simulation.dynamic_faults import (
+    UAVDynamicFaultState,
+    FleetFaultScheduler,
+    fleet_fault_scheduler,
+    FAULT_COMPONENT_MAPPING,
+    SUPPORTED_FAULT_STATES
+)
 
 __all__ = [
     "AeroPistonEngineSimulator",
@@ -45,5 +52,11 @@ __all__ = [
     "FaultType",
     "FaultConfig",
     "FaultInjector",
-    "TelemetryPerturbation"
+    "TelemetryPerturbation",
+    "UAVDynamicFaultState",
+    "FleetFaultScheduler",
+    "fleet_fault_scheduler",
+    "FAULT_COMPONENT_MAPPING",
+    "SUPPORTED_FAULT_STATES"
 ]
+

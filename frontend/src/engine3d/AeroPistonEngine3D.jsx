@@ -72,6 +72,7 @@ const SHORT_NAMES = {
   oil_filter: 'Oil',
   cooling_fins: 'Cylinders',
   wastegate: 'Turbo',
+  sensor_telemetry: 'Sensor / Telemetry',
 };
 
 /**
@@ -119,7 +120,7 @@ const MAJOR_FIVE_LABELS = [
  * - Short subtle leader lines
  * - No distanceFactor (maintains true screen pixel size)
  */
-function ComponentLeaderLabel({ part, onSelect, isSelected, isFault, isWarning }) {
+function ComponentLeaderLabel({ part, faultInfo, onSelect, isSelected, isFault, isWarning }) {
   const anchor = part.anchor3D || [0, 0, 0];
   const targetPos = useMemo(() => {
     const majorMatch = MAJOR_FIVE_LABELS.find((m) => m.id === part.id);
@@ -141,7 +142,7 @@ function ComponentLeaderLabel({ part, onSelect, isSelected, isFault, isWarning }
   }, [linePoints]);
 
   const lineColor = isFault ? 0xef4444 : isWarning ? 0xf59e0b : isSelected ? 0x38bdf8 : 0x64748b;
-  const displayName = SHORT_NAMES[part.id] || part.name || 'Component';
+  const displayName = faultInfo?.leaderLabel || SHORT_NAMES[part.id] || part.name || 'Component';
 
   return (
     <group>
@@ -269,8 +270,8 @@ function CompactDiagnosticCard({ part, faultDetails, onClose }) {
       <div className="flex items-center justify-between gap-1.5 border-b border-slate-800 pb-1.5 mb-2">
         <div className="flex items-center gap-1.5 min-w-0">
           <span className={`w-2 h-2 rounded-full ${theme.dot} flex-shrink-0`} />
-          <h4 className="font-bold text-slate-100 text-[11px] truncate tracking-wide" title={part.name}>
-            {part.name}
+          <h4 className="font-bold text-slate-100 text-[11px] truncate tracking-wide" title={faultDetails.componentName || part.name}>
+            {faultDetails.componentName || part.name}
           </h4>
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
@@ -700,6 +701,7 @@ function AeroPistonEngineWorkingAssembly({
   const oilSumpMat = getMaterial('oil_sump', { color: '#334155', metalness: 0.8, roughness: 0.35 });
   const oilPumpMat = getMaterial('oil_pump', { color: '#ca8a04', metalness: 0.8, roughness: 0.3 });
   const oilFilterMat = getMaterial('oil_filter', { color: '#eab308', metalness: 0.65, roughness: 0.35 });
+  const sensorMat = getMaterial('sensor_telemetry', { color: '#38bdf8', metalness: 0.7, roughness: 0.2 });
 
   const handlePointer = (e, partId) => {
     e.stopPropagation();
@@ -1547,6 +1549,16 @@ function AeroPistonEngineWorkingAssembly({
         </group>
       )}
 
+      {/* 11b. AVIONICS TELEMETRY SENSOR PROBE */}
+      <group position={[0, 0.45, -0.6]} onClick={(e) => handlePointer(e, 'sensor_telemetry')}>
+        <mesh material={sensorMat} castShadow>
+          <cylinderGeometry args={[0.025, 0.025, 0.12, 12]} />
+        </mesh>
+        <mesh material={sensorMat} position={[0, 0.08, 0]}>
+          <boxGeometry args={[0.06, 0.04, 0.05]} />
+        </mesh>
+      </group>
+
       {/* ============================================================= */}
       {/* 12. 3D LEADER LINES & NON-OVERLAPPING PART LABELS */}
       {/* ============================================================= */}
@@ -1558,6 +1570,7 @@ function AeroPistonEngineWorkingAssembly({
               <ComponentLeaderLabel
                 key={part.id}
                 part={part}
+                faultInfo={faultInfo}
                 onSelect={onSelectPart}
                 isSelected={selectedPartId === part.id}
                 isFault={faultInfo.status === 'FAULT'}
@@ -1688,6 +1701,7 @@ export default function AeroPistonEngine3D({
   ai = {},
   isConnected = false,
   height = 560,
+  uavId = null,   // ← NEW: authoritative UAV identity key for resetting 3D state
 }) {
   const [wireframe, setWireframe] = useState(false);
   const [isCutaway, setIsCutaway] = useState(true);
@@ -1715,7 +1729,10 @@ export default function AeroPistonEngine3D({
 
   // Compute overall AI / Digital Twin 3D engine status (NORMAL / WARNING / FAULT)
   const overallStatus = useMemo(() => {
-    if (ai?.predicted_fault && ai.predicted_fault !== 'NORMAL') return 'FAULT';
+    const fType = ai?.fault_type || ai?.predicted_fault;
+    if (fType === 'NORMAL') return 'NORMAL';
+    if (fType === 'SENSOR_ANOMALY') return 'WARNING';
+    if (fType && fType !== 'NORMAL') return 'FAULT';
     if (digitalTwin?.overall_status === 'CRITICAL') return 'FAULT';
     if (ai?.anomaly_status === 'ANOMALOUS') return 'WARNING';
     if (digitalTwin?.overall_status === 'WARNING') return 'WARNING';
@@ -1731,10 +1748,22 @@ export default function AeroPistonEngine3D({
 
   const [dismissedPartId, setDismissedPartId] = useState(null);
 
-  // If a new AI fault occurs, reset dismissed state so the operator sees the fault
+  // ── UAV switch: clear dismissed state immediately so the new UAV's fault
+  // is always shown, regardless of whether the part ID string happens to
+  // match the previously dismissed part from a different UAV.
+  const prevUavIdRef = useRef(uavId);
+  useEffect(() => {
+    if (uavId !== prevUavIdRef.current) {
+      setDismissedPartId(null);
+      prevUavIdRef.current = uavId;
+    }
+  }, [uavId]);
+
+  // If a new AI fault occurs mid-flight on the SAME UAV, also reset dismissed
+  // state so the operator sees the new fault notification.
   const prevAffectedRef = useRef(affectedPartId);
   useEffect(() => {
-    if (affectedPartId && affectedPartId !== prevAffectedRef.current) {
+    if (affectedPartId !== prevAffectedRef.current) {
       setDismissedPartId(null);
       prevAffectedRef.current = affectedPartId;
     }
@@ -1841,7 +1870,7 @@ export default function AeroPistonEngine3D({
               }`}
               title={
                 overallStatus === 'FAULT'
-                  ? `Fault State: ${ai?.predicted_fault || 'Critical'}`
+                  ? `Fault State: ${ai?.fault_type || ai?.predicted_fault || 'Critical'}`
                   : overallStatus === 'WARNING'
                   ? 'Warning / Anomaly Detected'
                   : 'Nominal Engine Operation'
@@ -1856,10 +1885,15 @@ export default function AeroPistonEngine3D({
                     : 'bg-emerald-400'
                 }`}
               />
-              <span>STATUS: {overallStatus}</span>
-              {overallStatus === 'FAULT' && ai?.predicted_fault && ai.predicted_fault !== 'NORMAL' && (
+              <span>STATUS: {overallStatus === 'NORMAL' ? 'ENGINE NORMAL / HEALTHY' : overallStatus}</span>
+              {overallStatus === 'FAULT' && (ai?.fault_type || ai?.predicted_fault) && (ai?.fault_type || ai?.predicted_fault) !== 'NORMAL' && (
                 <span className="hidden xl:inline text-[9px] text-rose-300/90 font-normal">
-                  [{ai.predicted_fault.replace(/_/g, ' ')}]
+                  [{String(ai?.fault_type || ai?.predicted_fault).replace(/_/g, ' ')}]
+                </span>
+              )}
+              {overallStatus === 'WARNING' && (
+                <span className="hidden xl:inline text-[9px] text-amber-300/90 font-normal">
+                  [SENSOR ANOMALY]
                 </span>
               )}
             </div>
