@@ -1,10 +1,4 @@
-"""
-Mission Risk & Reliability API Routes
-======================================
-Exposes endpoints evaluating mission reliability, operational risk levels,
-and actionable dispatch recommendations.
-"""
-
+import asyncio
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, status
 from backend.app.schemas import MissionRiskResponse, WhatIfRequest, WhatIfResponse
@@ -53,10 +47,21 @@ def get_mission_risk(
     response_model=WhatIfResponse,
     summary="Evaluate What-If scenario using physics simulation, Digital Twin, and AI"
 )
-def evaluate_what_if_scenario(request: WhatIfRequest) -> WhatIfResponse:
+async def evaluate_what_if_scenario(request: WhatIfRequest) -> WhatIfResponse:
     """
     Evaluates a What-If flight scenario without modifying any live UAV telemetry,
     fleet state, or RTB status. Uses isolated simulation physics and Digital Twin models.
     """
-    result = service_manager.evaluate_what_if(request)
-    return WhatIfResponse(**result)
+    try:
+        result = await asyncio.to_thread(service_manager.evaluate_what_if, request)
+        return WhatIfResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid What-If parameter: {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"What-If evaluation failed: {str(e)}"
+        )

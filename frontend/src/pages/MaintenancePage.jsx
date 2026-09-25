@@ -415,7 +415,7 @@ export default function MaintenancePage() {
         {/* Condition-Based Recommendations & Directives */}
         <SectionCard
           title="Recommended Maintenance Actions"
-          subtitle={`Triggered dynamically by AI anomaly detection & RUL for ${activeUavId}`}
+          subtitle={`Derived from anomaly detection & RUL for ${activeUavId}`}
         >
           <div className="space-y-4">
             {/* Maintenance Decision Summary Banner */}
@@ -430,7 +430,7 @@ export default function MaintenancePage() {
                 priorityStatus === STATUS_TYPES.CRITICAL ? 'text-rose-400' : priorityStatus === STATUS_TYPES.WARNING ? 'text-amber-400' : 'text-emerald-400'
               }`} />
               <div className="font-mono text-xs space-y-1">
-                <span className="font-bold text-slate-200 block">AI DIAGNOSTIC EVIDENCE</span>
+                <span className="font-bold text-slate-200 block">DIAGNOSTIC EVIDENCE</span>
                 <p className="text-slate-400 leading-relaxed">{explanation}</p>
               </div>
             </div>

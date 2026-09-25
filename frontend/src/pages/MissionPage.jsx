@@ -168,7 +168,7 @@ export default function MissionPage() {
           value={advisory}
           unit=""
           status={advisoryStatus}
-          subtext={isConnected ? 'Autonomous Decision Engine' : 'No immediate hazard flags'}
+          subtext={isConnected ? 'Decision Engine' : 'No immediate hazard flags'}
           icon={AlertOctagon}
         />
         <MetricCard
@@ -181,7 +181,7 @@ export default function MissionPage() {
         />
       </div>
 
-      {/* Key Diagnostic Telemetry & AI Synthesis Row */}
+      {/* Key Diagnostic Telemetry & Synthesis Row */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <MetricCard
           title="Engine Health"
@@ -212,7 +212,7 @@ export default function MissionPage() {
           value={isConnected ? predictedFault.replace(/_/g, ' ') : '--'}
           unit=""
           status={!isConnected ? STATUS_TYPES.IDLE : predictedFault === 'NORMAL' ? STATUS_TYPES.HEALTHY : STATUS_TYPES.CRITICAL}
-          subtext="AI Classifier Mode"
+          subtext="Fault Classifier"
           icon={AlertTriangle}
         />
         <MetricCard
@@ -220,7 +220,7 @@ export default function MissionPage() {
           value={isConnected ? rawAnomalyScore.toFixed(4) : '--'}
           unit=""
           status={!isConnected ? STATUS_TYPES.IDLE : (anomalyStatus === 'NORMAL' || rawAnomalyScore < 0.2) ? STATUS_TYPES.HEALTHY : rawAnomalyScore < 0.6 ? STATUS_TYPES.WARNING : STATUS_TYPES.CRITICAL}
-          subtext={isConnected ? anomalyStatus : 'Unsupervised AI Model'}
+          subtext={isConnected ? anomalyStatus : 'Isolation Forest'}
           icon={ShieldCheck}
         />
       </div>

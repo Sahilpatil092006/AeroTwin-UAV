@@ -185,7 +185,7 @@ export default function FleetPage() {
       <PageHeader
         systemTag="AEROTWIN // FLEET OPS"
         title="Fleet Overview & Risk Management"
-        description="Synchronized multi-UAV operational status, fleet-level risk assessment, live telemetry tracking, and predictive AI diagnostics across all fleet units."
+        description="Synchronized multi-UAV operational status, fleet-level risk assessment, live telemetry tracking, and diagnostics across all fleet units."
         actions={
           <div className="flex items-center gap-3">
             <button

@@ -8,6 +8,8 @@ Software-only research prototype.
 """
 
 import logging
+import asyncio
+from contextlib import asynccontextmanager
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -20,6 +22,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from backend.app.core.config import settings
 from backend.app.api import api_router
 from backend.app.api.websocket import router as websocket_router
+from backend.app.services.twin_service import service_manager
 
 # Configure server-side logging
 logging.basicConfig(
@@ -28,6 +31,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger("aerotwin.api")
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Pre-warms fleet simulations and ML models on server startup for instant response."""
+    try:
+        await asyncio.to_thread(service_manager.ensure_fleet_simulation)
+        await asyncio.to_thread(service_manager.step_fleet_simulation)
+        logger.info("AeroTwin-UAV fleet simulations and digital twin models pre-warmed successfully.")
+    except Exception as e:
+        logger.warning("Startup pre-warm notice: %s", e)
+    yield
+
+
 # Initialize FastAPI application
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -35,7 +51,8 @@ app = FastAPI(
     version=settings.VERSION,
     docs_url="/docs",
     redoc_url="/redoc",
-    openapi_url="/openapi.json"
+    openapi_url="/openapi.json",
+    lifespan=lifespan
 )
 
 # -----------------------------------------------------------------------------

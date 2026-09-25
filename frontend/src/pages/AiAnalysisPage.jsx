@@ -513,7 +513,7 @@ export default function AiAnalysisPage() {
           <div className="flex items-center gap-2">
             <Activity className="w-4 h-4 text-sky-400" />
             <h2 className="text-xs font-bold tracking-wider text-slate-300 uppercase">
-              A. AI Health Summary
+              A. Health Summary
             </h2>
           </div>
           <div className="flex items-center gap-2">
@@ -901,10 +901,10 @@ export default function AiAnalysisPage() {
         </SectionCard>
       </div>
 
-      {/* SECTION E: AI EVIDENCE */}
+      {/* SECTION E: DIAGNOSTIC EVIDENCE */}
       <SectionCard
-        title="Why did the AI produce this result?"
-        subtitle="E. AI Evidence & Interpretability Analysis"
+        title="Diagnostic Reasoning"
+        subtitle="E. Diagnostic Evidence & Interpretability"
         action={
           <div className="flex items-center gap-1.5">
             <span className="text-[10px] text-slate-400 uppercase tracking-wider">SEVERITY:</span>
@@ -929,7 +929,7 @@ export default function AiAnalysisPage() {
             </p>
           </div>
 
-          {/* Grid: 3. AI CONFIDENCE & 4. FAULT + ANOMALY RELATIONSHIP */}
+          {/* Grid: 3. CONFIDENCE & 4. FAULT + ANOMALY RELATIONSHIP */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* 4. FAULT + ANOMALY RELATIONSHIP */}
             <div className="p-3 rounded-lg bg-slate-950/80 border border-slate-800 space-y-2">
@@ -967,10 +967,10 @@ export default function AiAnalysisPage() {
               </p>
             </div>
 
-            {/* 3. AI CONFIDENCE & 5. DIGITAL TWIN SUMMARY */}
+            {/* 3. CONFIDENCE & 5. DIGITAL TWIN SUMMARY */}
             <div className="p-3 rounded-lg bg-slate-950/80 border border-slate-800 space-y-2">
               <span className="text-[10px] text-slate-400 uppercase tracking-wider block font-semibold">
-                3. AI Confidence & Twin Deviation Summary
+                3. Confidence & Deviation Summary
               </span>
               <div className="grid grid-cols-2 gap-2 text-xs font-mono">
                 <div className="p-2 rounded bg-slate-900/80 border border-slate-800">
@@ -1079,13 +1079,13 @@ export default function AiAnalysisPage() {
         </div>
       </SectionCard>
  
-      {/* FINAL COMPACT AI HEALTH SUMMARY SECTION */}
+      {/* FINAL COMPACT HEALTH SUMMARY SECTION */}
       <SectionCard
-        title="AI Health Summary"
+        title="Health Summary"
         subtitle="Consolidated real-time operational overview"
         action={
           <div className="flex items-center gap-1.5">
-            <span className="text-[10px] text-slate-400 uppercase tracking-wider">OVERALL AI STATUS:</span>
+            <span className="text-[10px] text-slate-400 uppercase tracking-wider">OVERALL STATUS:</span>
             <span className={`px-2.5 py-0.5 rounded text-xs font-bold border flex items-center gap-1.5 ${overallBadge.badgeClass}`}>
               <span className={`w-1.5 h-1.5 rounded-full ${overallBadge.dotClass}`} />
               {overallBadge.label}
@@ -1096,10 +1096,10 @@ export default function AiAnalysisPage() {
         <div className="space-y-4">
           {/* Horizontal / Grid Cards: Items 1 to 6 */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-            {/* 1. OVERALL AI STATUS */}
+            {/* 1. OVERALL STATUS */}
             <div className="p-3 rounded bg-slate-950/80 border border-slate-800 flex flex-col justify-between">
               <span className="text-[10px] text-slate-400 uppercase tracking-wider block mb-1">
-                Overall AI Status
+                Overall Status
               </span>
               <span className={`text-sm font-bold block truncate ${
                 overallBadge.label === 'FAULT'

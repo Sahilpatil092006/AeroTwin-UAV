@@ -12,7 +12,7 @@ const api = axios.create({
     'Content-Type': 'application/json',
     Accept: 'application/json',
   },
-  timeout: 10000,
+  timeout: 20000,
 });
 
 // Request interceptor
@@ -47,11 +47,11 @@ export const healthApi = {
  */
 export const simulationApi = {
   start: async (params) => {
-    const res = await api.post('/api/simulation/start', params);
+    const res = await api.post('/api/simulation/start', params, { timeout: 20000 });
     return res.data;
   },
   injectFault: async (params) => {
-    const res = await api.post('/api/simulation/fault', params);
+    const res = await api.post('/api/simulation/fault', params, { timeout: 20000 });
     return res.data;
   },
   getCurrent: async () => {
@@ -110,12 +110,14 @@ export const missionApi = {
   },
   evaluateWhatIf: async (scenarioData = {}) => {
     try {
-      const res = await api.post('/api/mission/what-if', scenarioData);
+      const res = await api.post('/api/mission/what-if', scenarioData, { timeout: 20000 });
       return res.data;
     } catch (err) {
       if (typeof fetch !== 'undefined') {
         const fallbackUrl = `${API_BASE_URL || 'http://localhost:8000'}/api/mission/what-if`;
         try {
+          const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+          const timeoutId = controller ? setTimeout(() => controller.abort(), 8000) : null;
           const fallbackRes = await fetch(fallbackUrl, {
             method: 'POST',
             headers: {
@@ -123,7 +125,9 @@ export const missionApi = {
               Accept: 'application/json',
             },
             body: JSON.stringify(scenarioData),
+            signal: controller ? controller.signal : undefined,
           });
+          if (timeoutId) clearTimeout(timeoutId);
           if (fallbackRes.ok) {
             return await fallbackRes.json();
           }

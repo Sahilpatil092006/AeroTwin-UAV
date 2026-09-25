@@ -430,6 +430,13 @@ def test_fault_injection_and_isolation():
     assert start_resp.status_code == 201
     baseline_cht = start_resp.json()["cht"]
 
+    # Capture UAV-002 initial baseline state before UAV-001 fault injection
+    uav2_init_resp = client.get("/api/uav/UAV-002/state")
+    assert uav2_init_resp.status_code == 200
+    uav2_init_state = uav2_init_resp.json()
+    uav2_baseline_cht = uav2_init_state["engine_telemetry"]["cht"]
+    uav2_baseline_fault = uav2_init_state["fault_type"]
+
     # 2. Inject COOLING_PROBLEM fault into UAV-001
     fault_resp = client.post(
         "/api/simulation/fault",
@@ -463,7 +470,7 @@ def test_fault_injection_and_isolation():
     assert uav2_state["flight_phase"] == "CLIMB"
     assert uav2_state["engine_telemetry"]["altitude"] == 3200.0
     assert uav2_state["engine_telemetry"]["throttle"] == 85.0
-    assert uav2_state["engine_telemetry"]["cht"] < baseline_cht + 15.0
+    assert uav2_state["engine_telemetry"]["cht"] < uav2_baseline_cht + 15.0
 
     # 5. Clear fault / restore nominal mode
     clear_resp = client.post(

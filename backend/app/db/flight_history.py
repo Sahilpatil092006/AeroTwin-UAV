@@ -17,6 +17,9 @@ logger = logging.getLogger("aerotwin.db")
 DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "flight_history.db")
 
 
+import time
+
+
 class FlightHistoryDB:
     """Manages persistent SQLite flight history and telemetry session archiving."""
 
@@ -29,18 +32,20 @@ class FlightHistoryDB:
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        """Returns a connection configured with WAL journal mode and Row factory."""
-        os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
+        """Returns a fast, thread-safe connection configured with Row factory."""
         conn = sqlite3.connect(self.db_path, timeout=10.0, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode = WAL;")
-        conn.execute("PRAGMA synchronous = NORMAL;")
+        conn.execute("PRAGMA busy_timeout = 5000;")
         return conn
 
     def _init_db(self) -> None:
-        """Creates table schemas and indexing if not already present."""
+        """Creates table schemas, pragmas, and indexing if not already present."""
+        os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
         with self._lock:
-            conn = self._get_connection()
+            conn = sqlite3.connect(self.db_path, timeout=10.0, check_same_thread=False)
+            conn.execute("PRAGMA journal_mode = WAL;")
+            conn.execute("PRAGMA synchronous = NORMAL;")
+            conn.execute("PRAGMA busy_timeout = 5000;")
             try:
                 with conn:
                     conn.execute("""
@@ -156,7 +161,13 @@ class FlightHistoryDB:
         throttle = float(telemetry.get("throttle", telemetry.get("engine_load", 0.0)))
         load = float(telemetry.get("engine_load", throttle))
 
+        now_t = time.time()
         with self._lock:
+            last_t = self._last_sample_time.get(clean_id, 0.0)
+            if now_t - last_t < self.min_sample_interval_sec:
+                return None
+            self._last_sample_time[clean_id] = now_t
+
             conn = self._get_connection()
             try:
                 with conn:

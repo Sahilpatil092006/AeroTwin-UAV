@@ -99,3 +99,23 @@ def test_what_if_does_not_mutate_live_uav_state(client):
     assert uav001_after["flight_phase"] == uav001_before["flight_phase"]
     # Telemetry should remain in normal operating zone, NOT jumped to 25000 ft altitude or 95% throttle
     assert abs(uav001_after["engine_telemetry"]["rpm"] - uav001_before["engine_telemetry"]["rpm"]) < 50.0
+
+
+def test_what_if_altitude_validation_out_of_envelope(client):
+    """
+    Validates that What-If requests exceeding operational ceiling (30,000 ft / 9,144 m <= 10,000 m)
+    or negative altitudes return a clean HTTP 422 validation error instead of HTTP 500.
+    """
+    # 1. Exceeds operational ceiling (35,000 ft)
+    res_high_alt = client.post("/api/mission/what-if", json={"altitude": 35000.0})
+    assert res_high_alt.status_code == 422, f"Expected 422 for 35,000 ft, got {res_high_alt.status_code}"
+    assert "altitude" in str(res_high_alt.json()).lower()
+
+    # 2. Negative altitude (-100 ft)
+    res_neg_alt = client.post("/api/mission/what-if", json={"altitude": -100.0})
+    assert res_neg_alt.status_code == 422, f"Expected 422 for negative altitude, got {res_neg_alt.status_code}"
+
+    # 3. Maximum valid operational ceiling (30,000 ft)
+    res_max_alt = client.post("/api/mission/what-if", json={"altitude": 30000.0})
+    assert res_max_alt.status_code == 200, f"Expected 200 for 30,000 ft ceiling, got {res_max_alt.status_code}"
+

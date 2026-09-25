@@ -333,7 +333,7 @@ export default function WhatIfPage() {
                 </span>
                 {forecast.explanation && (
                   <span className="text-sky-300/80 block text-[11px] italic mt-1">
-                    AI Assessment: {forecast.explanation}
+                    Assessment: {forecast.explanation}
                   </span>
                 )}
               </div>

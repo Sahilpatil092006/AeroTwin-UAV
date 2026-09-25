@@ -326,7 +326,7 @@ export default function DashboardPage() {
           value={rulVal}
           unit="hrs"
           status={rulStatus}
-          subtext={isConnected ? `${activeUavId} AI degradation estimation` : 'Degradation model standby'}
+          subtext={isConnected ? `${activeUavId} degradation estimation` : 'Degradation model standby'}
           icon={Clock}
         />
       </div>
@@ -485,9 +485,9 @@ export default function DashboardPage() {
           </div>
         </SectionCard>
 
-        {/* 7. AI DIAGNOSTICS */}
+        {/* 7. ENGINE DIAGNOSTICS */}
         <SectionCard
-          title="AI Diagnostics & Anomaly"
+          title="Engine Diagnostics & Anomaly"
           subtitle={`Classifier inference, Isolation Forest, and RUL for ${activeUavId}`}
           action={
             <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${

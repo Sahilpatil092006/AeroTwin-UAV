@@ -125,8 +125,8 @@ export default function ReportsPage() {
   }
 
   const diagnosticSummary = fault !== 'NORMAL'
-    ? `Propulsion AI detected '${fault}' with ${(confidence * 100).toFixed(1)}% confidence. Anomaly status: ${anomalyStatus} (${(anomalyScore * 100).toFixed(1)}%). Mission advisory: ${recommendation.replace(/_/g, ' ')}.`
-    : `All propulsion subsystems operating within baseline tolerances. Anomaly status: ${anomalyStatus} (${(anomalyScore * 100).toFixed(1)}%). Mission advisory: ${recommendation.replace(/_/g, ' ')}.`;
+    ? `Propulsion diagnostics identified '${fault}' with ${(confidence * 100).toFixed(1)}% confidence. Anomaly status: ${anomalyStatus} (${(anomalyScore * 100).toFixed(1)}%). Mission status: ${recommendation.replace(/_/g, ' ')}.`
+    : `All propulsion subsystems operating within baseline tolerances. Anomaly status: ${anomalyStatus} (${(anomalyScore * 100).toFixed(1)}%). Mission status: ${recommendation.replace(/_/g, ' ')}.`;
 
   const timestampStr = uav?.timestamp
     ? new Date(uav.timestamp).toLocaleString()
@@ -142,7 +142,7 @@ export default function ReportsPage() {
       <PageHeader
         systemTag="AEROTWIN // MISSION REPORTS"
         title="Flight & Maintenance Reports"
-        description="Comprehensive real-time propulsion telemetry logs, engine health audits, and condition-based certification records for the active fleet vehicle."
+        description="Real-time propulsion telemetry logs, engine health audits, and condition-based records for the active fleet vehicle."
         actions={
           <div className="flex flex-wrap items-center gap-3">
             {/* Active UAV Selector */}
@@ -266,12 +266,12 @@ export default function ReportsPage() {
             </div>
           </div>
 
-          {/* AI Diagnostic Explanation Banner */}
+          {/* Diagnostic Explanation Banner */}
           <div className="p-3.5 rounded-lg bg-slate-950/80 border border-slate-800 font-mono text-xs space-y-1.5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="font-bold text-slate-200 flex items-center gap-2">
                 <Cpu className="w-4 h-4 text-cyan-400" />
-                AI DIAGNOSTIC REPORT ({activeUavId})
+                ENGINE DIAGNOSTICS ({activeUavId})
               </span>
               <div className="flex items-center gap-2">
                 <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${

@@ -245,7 +245,7 @@ class MissionRiskResponse(BaseModel):
 # =============================================================================
 class WhatIfRequest(BaseModel):
     """Parameters for evaluating a What-If predictive flight projection."""
-    altitude: float = Field(default=18000.0, ge=0.0, le=50000.0, description="Altitude in feet")
+    altitude: float = Field(default=18000.0, ge=0.0, le=30000.0, description="Altitude in feet (0 to 30,000 ft)")
     ambientDelta: float = Field(default=15.0, ge=-50.0, le=60.0, description="Ambient temperature delta in °C")
     throttle: float = Field(default=85.0, ge=0.0, le=100.0, description="Throttle position %")
     injectorDrift: float = Field(default=0.0, ge=0.0, le=100.0, description="Induced injector lean drift %")

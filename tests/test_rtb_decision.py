@@ -241,6 +241,18 @@ def test_api_rtb_status_uav005(client):
     low oil pressure (< 1.0 bar), and critical engine health (< 30%).
     Must activate RTB.
     """
+    # Deterministically ensure UAV-005 is in its critical severe lubrication fault condition
+    # regardless of dynamic fault scheduler progression during long test runs
+    client.post(
+        "/api/simulation/fault",
+        json={
+            "fault_type": "LUBRICATION_PROBLEM",
+            "severity": 0.85,
+            "degradation": 0.70,
+            "uav_id": "UAV-005",
+        }
+    )
+
     response = client.get("/api/rtb/status?uav_id=UAV-005")
     assert response.status_code == 200
     data = response.json()
