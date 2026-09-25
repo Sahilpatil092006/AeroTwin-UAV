@@ -8,7 +8,7 @@ Software-only research prototype.
 """
 
 from dataclasses import dataclass
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 import math
 import numpy as np
 
